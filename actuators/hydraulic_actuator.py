@@ -7,7 +7,7 @@ Input  : current joint positions (rad), velocity history (rad/s), and
 Output : predicted joint velocity (rad/s). The sim-side actuator integrates
          this into position targets via Euler integration.
 
-The model is trained in rad / rad/s units — no unit conversion is performed here.
+The model is trained in rad / rad/s units.
 Cabin / slew is NOT covered by this model and must be controlled separately.
 
 Joint order: [boom/lift, arm/tilt, bucket/tool]

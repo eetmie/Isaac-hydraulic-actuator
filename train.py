@@ -455,9 +455,9 @@ def main(
         global_seg = start_seg
         for i, f in enumerate(files):
             part = pd.read_csv(f)
-            # Logger records timestamps in milliseconds — convert to seconds for dt-based windowing
+            # Logger records timestamps in seconds, matching --dt and the history horizons.
             if TIME_COL in part.columns:
-                part[TIME_COL] = pd.to_numeric(part[TIME_COL], errors="coerce") / 1000.0
+                part[TIME_COL] = pd.to_numeric(part[TIME_COL], errors="coerce")
             if SEGMENT_COL in part.columns:
                 seg_ids = sorted(part[SEGMENT_COL].dropna().unique())
                 seg_map = {old: idx + global_seg for idx, old in enumerate(seg_ids)}
@@ -596,7 +596,7 @@ def main(
         "q_cols": Q_COLS,
         "qdot_cols": QDOT_COLS,
         "units": {
-            "timestamp_raw": "ms",
+            "timestamp_raw": "s",
             "joint_position": "rad",
             "joint_velocity": "rad/s",
             "command": "normalized_-1_to_1",

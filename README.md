@@ -31,7 +31,7 @@ scripts/nn/
 
 | Column | Type | Notes |
 |---|---|---|
-| `timestamp` | float, milliseconds | monotonically increasing |
+| `timestamp` | float, seconds | monotonically increasing |
 | `joint_pos_boom` | float, radians | |
 | `joint_pos_arm` | float, radians | |
 | `joint_pos_bucket` | float, radians | |
@@ -43,8 +43,6 @@ scripts/nn/
 Joint velocities are **computed from positions** using causal backward differences. I will compare these to IMU gyro velocities and update if necessary...
 
 Commands should be the actual values sent to the valves, normalized to [-1, 1] (i.e. `int8_value / 127`). Log them at a consistent rate matching your intended control frequency (`--dt`).
-
-`train.py` converts millisecond timestamps to seconds internally.
 
 ---
 

@@ -101,7 +101,7 @@ class VelocityIntegratedActuator:
                 min=self._joint_pos_limits[:, :, 0],
                 max=self._joint_pos_limits[:, :, 1],
             )
-
+    
         # Send position targets to robot PD controller
         self.robot.set_joint_position_target(self._target_position, joint_ids=self.joint_ids)
 
