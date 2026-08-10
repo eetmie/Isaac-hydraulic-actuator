@@ -1,671 +1,500 @@
-"""
-train.py
+"""Train the three-joint supervised hydraulic actuator model.
 
-Supervised hydraulic actuator model:
-X(t) = [q(t), qdot(t..t-Hq), u(t..t-Hu), pA(t), pB(t)]  -->  y(t) = qdot(t+1)
+One 3x128 ReLU MLP models all three hydraulic joints. The input is the current
+position, a dense velocity history and a sparse command history; the target is
+``delta_qdot = qdot(t + dt) - qdot(t)``, and the next absolute velocity is
+reconstructed as ``qdot(t) + delta_qdot``.
 
-- Feed-forward MLP with explicit history stacking (like Egli & Hutter actuator model).
-- Exports ONNX for IsaacSim usage.
+``mlp_state_dict.pt`` is the checkpoint with the best held-out *rollout* position
+error, not the last epoch and not the best one-step loss -- see rollout.py. The
+final-epoch weights are kept alongside as ``mlp_state_dict_final.pt``.
 
-Assumptions:
-- Input logs come from ``data_collection/drive_logger.py``.
-- We train on the three hydraulic arm axes only: boom, arm, bucket.
-- Commands are the logged combined valve commands actually sent to the valves.
-- Optional pressures are the logged extend/retract chamber readings.
+Train/validation is split either over whole driving sessions or over contiguous
+snippets -- ``--split``, see splits.py.
+
+Cleaning is not part of this file; feed it CSVs that already have the required
+columns. RPM and oil temperature are not inputs.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict
+from typing import Dict, List, Optional, Tuple
 import json
+import time
 
 import numpy as np
 import pandas as pd
-
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
 
-# ----------------------------
-# Config for data_collection/drive_logger.py
-# ----------------------------
-
-TIME_COL = "timestamp"
-SEGMENT_COL = "segment_id"
-
-U_COLS = ["combined_cmd_lift", "combined_cmd_tilt", "combined_cmd_scoop"]
-Q_COLS = ["joint_pos_boom", "joint_pos_arm", "joint_pos_bucket"]
-QDOT_COLS = ["joint_vel_boom", "joint_vel_arm", "joint_vel_bucket"]
-
-@dataclass
-class WindowSpec:
-    dt: float = 0.02            # 50 Hz
-    hist_qdot: int = 5          # qdot history length (0.1 s @ 50 Hz — paper default)
-    hist_u: int = 50            # command history length (1.0 s @ 50 Hz — paper default)
-    include_q: bool = True
-
-
-# ----------------------------
-# Utilities
-# ----------------------------
-
-def resample_to_fixed_dt(df: pd.DataFrame, dt: float, time_col: str) -> pd.DataFrame:
-    """Resample one continuous segment using interpolation on a uniform time grid."""
-    df = df.sort_values(time_col).drop_duplicates(time_col)
-    if len(df) < 2:
-        return df.copy()
-
-    t0 = float(df[time_col].iloc[0])
-    t1 = float(df[time_col].iloc[-1])
-    t_grid = np.arange(t0, t1 + 1e-12, dt)
-    out = pd.DataFrame({time_col: t_grid})
-
-    x = df[time_col].to_numpy(np.float64)
-    for col in df.columns:
-        if col == time_col:
-            continue
-        numeric = pd.to_numeric(df[col], errors="coerce")
-        if numeric.notna().sum() == 0:
-            first_valid = next((v for v in df[col] if pd.notna(v)), np.nan)
-            out[col] = first_valid
-            continue
-        y = numeric.to_numpy(np.float64)
-        valid = np.isfinite(y)
-        if valid.sum() < 2:
-            if valid.sum() == 1:
-                out[col] = y[valid][0]
-            else:
-                out[col] = np.nan
-            continue
-        out[col] = np.interp(t_grid, x[valid], y[valid])
-    return out
+from dataset import (
+    HIDDEN,
+    ACTIVATION,
+    TARGET_MODE,
+    MLP,
+    Normalizer,
+    WindowSpec,
+    build_pool,
+    resolve_csvs,
+)
+from rollout import RolloutScorer, make_starts
+from splits import (
+    recording_id,
+    session_ids,
+    snippet_train_val_indices,
+    train_val_indices,
+)
 
 
-def split_into_segments(
-    df: pd.DataFrame,
-    time_col: str,
-    dt: float,
-    max_gap_factor: float = 3.0,
-) -> List[pd.DataFrame]:
-    """Split dataframe into continuous segments, respecting segment_id if available."""
-    if SEGMENT_COL in df.columns:
-        segments: List[pd.DataFrame] = []
-        for _, seg in df.groupby(SEGMENT_COL, sort=True):
-            seg = seg.sort_values(time_col)
-            if len(seg) >= 2:
-                segments.append(seg)
-        return segments
+def resolve_out_dir(out_dir: Optional[str]) -> Path:
+    """Where a run writes its artifacts.
 
-    df = df.sort_values(time_col)
-    t = df[time_col].to_numpy(np.float64)
-    gaps = np.diff(t)
-    split_idx = np.where((gaps <= 0.0) | (gaps > max_gap_factor * dt))[0] + 1
-    chunks = np.split(df, split_idx)
-    return [c for c in chunks if len(c) >= 2]
+    A relative ``--out`` is resolved against this script, not the working
+    directory, so runs land beside the code whether they were launched from
+    here or from the repository root through Isaac Lab's launcher.
 
-
-def build_dataset_from_segments(
-    segments: List[pd.DataFrame],
-    spec: WindowSpec,
-    resample: bool,
-) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """Build X/y arrays for each segment independently."""
-    out: List[Tuple[np.ndarray, np.ndarray]] = []
-    for seg in segments:
-        seg_df = resample_to_fixed_dt(seg, spec.dt, TIME_COL) if resample else seg.sort_values(TIME_COL).ffill().bfill()
-
-        if "cmd_stale" in seg_df.columns:
-            cmd_stale = pd.to_numeric(seg_df["cmd_stale"], errors="coerce").fillna(0.0)
-            seg_df = seg_df.loc[cmd_stale <= 0.5]
-
-        required_cols = Q_COLS + QDOT_COLS + U_COLS
-        seg_df = seg_df.dropna(subset=required_cols)
-        if len(seg_df) <= max(spec.hist_qdot, spec.hist_u) + 1:
-            continue
-        X, y = build_supervised_xy(seg_df, spec)
-        if len(X) > 0:
-            out.append((X, y))
-    return out
-
-
-def make_history_matrix(arr: np.ndarray, hist: int) -> np.ndarray:
+    The default is a fresh timestamped run directory. It is deliberately NOT
+    the deployed ``model/`` directory: that made a bare ``python train.py``
+    overwrite the shipped artifact in place, with no way back.
     """
-    Given arr [T, D], return stacked history [T, D*hist]
-    using (t, t-1, ..., t-hist+1). Pads by repeating first row.
-    """
-    T, D = arr.shape
-    out = np.zeros((T, D * hist), dtype=np.float32)
-    for k in range(hist):
-        src_idx = np.clip(np.arange(T) - k, 0, T - 1)
-        out[:, k * D:(k + 1) * D] = arr[src_idx, :]
-    return out
+    if out_dir is None:
+        out_dir = f"runs/{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    path = Path(out_dir)
+    return path if path.is_absolute() else Path(__file__).resolve().parent / path
 
 
-@dataclass
-class Normalizer:
-    mean: np.ndarray
-    std: np.ndarray
+def evaluate(model: nn.Module, X: torch.Tensor, y: torch.Tensor, loss_fn) -> float:
+    model.eval()
+    with torch.no_grad():
+        return float(loss_fn(model(X), y).item())
 
-    @staticmethod
-    def fit(x: np.ndarray, eps: float = 1e-8) -> "Normalizer":
-        m = x.mean(axis=0)
-        s = x.std(axis=0)
-        s = np.maximum(s, eps)
-        return Normalizer(mean=m, std=s)
-
-    def transform(self, x: np.ndarray) -> np.ndarray:
-        return (x - self.mean) / self.std
-
-    def inverse(self, x: np.ndarray) -> np.ndarray:
-        return x * self.std + self.mean
-
-
-# ----------------------------
-# Dataset
-# ----------------------------
-
-class ActuatorDataset(Dataset):
-    def __init__(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-    ):
-        self.X = torch.from_numpy(X).float()
-        self.y = torch.from_numpy(y).float()
-
-    def __len__(self) -> int:
-        return self.X.shape[0]
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.X[idx], self.y[idx]
-
-
-def build_supervised_xy(
-    df: pd.DataFrame,
-    spec: WindowSpec,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Returns:
-      X: [N, input_dim]
-      y: [N, n_joints] = qdot(t+1)
-
-    Notes:
-      - drive_logger.py stores joint positions in radians and velocities in rad/s.
-      - The model is unit-agnostic as long as training and inference use the same units.
-    """
-    q    = df[Q_COLS].to_numpy(np.float32)
-    qdot = df[QDOT_COLS].to_numpy(np.float32)
-    u    = df[U_COLS].to_numpy(np.float32)
-
-    feats: List[np.ndarray] = []
-    if spec.include_q:
-        feats.append(q)
-    feats.append(make_history_matrix(qdot, spec.hist_qdot))
-    feats.append(make_history_matrix(u, spec.hist_u))
-
-    X_all = np.concatenate(feats, axis=1)
-
-    # Target is qdot(t+1)
-    y_all = np.roll(qdot, shift=-1, axis=0)
-
-    # Drop last row (has invalid y)
-    X = X_all[:-1, :]
-    y = y_all[:-1, :]
-    return X, y
-
-
-# ----------------------------
-# Model
-# ----------------------------
-
-class MLP(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, hidden: List[int] = [256, 256, 256]):
-        super().__init__()
-        layers: List[nn.Module] = []
-        prev = in_dim
-        for h in hidden:
-            layers += [nn.Linear(prev, h), nn.Tanh()]
-            prev = h
-        layers += [nn.Linear(prev, out_dim)]
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-# ----------------------------
-# Train / Eval
-# ----------------------------
 
 def train(
     model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    epochs: int = 30,
-    lr: float = 1e-3,
-    weight_decay: float = 0.0,
-    patience: int = 10,
-    min_delta: float = 1e-5,
-    device: str = "cuda" if torch.cuda.is_available() else "cpu",
-    live_plotter: Optional["LivePlotter"] = None,
-    plot_every: int = 1,
-    checkpoint_every: int = 50,
+    X_train: torch.Tensor,
+    y_train: torch.Tensor,
+    X_val: torch.Tensor,
+    y_val: torch.Tensor,
+    *,
+    epochs: int,
+    batch_size: int,
+    lr: float,
+    weight_decay: float,
+    device: str,
+    scorer: Optional[RolloutScorer] = None,
+    select_on: str = "rollout",
+    rollout_every: int = 5,
+    checkpoint_every: int = 0,
     checkpoint_dir: Optional[Path] = None,
-) -> Tuple[nn.Module, List[Dict[str, float]], int, float]:
+) -> Tuple[Dict[str, torch.Tensor], int, Dict[str, float], List[Dict[str, float]]]:
+    """Minibatch training with best-checkpoint tracking.
+
+    ``select_on`` picks the selection metric: ``"rollout"`` (free-running
+    position error, the thing the model is actually judged by) or ``"val"``
+    (one-step MSE). Rollout scoring runs every ``rollout_every`` epochs, and
+    only those epochs are selection candidates.
+
+    Always runs the full epoch budget -- no early stopping -- so the complete
+    curve stays available. Returns the best weights, the epoch they came from,
+    that epoch's metrics, and the per-epoch history.
+    """
+    if select_on == "rollout" and scorer is None:
+        raise ValueError("select_on='rollout' requires a RolloutScorer")
     model = model.to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = nn.MSELoss()
 
-    best_val = float("inf")
-    best_state: Optional[Dict] = None
+    n_train = X_train.shape[0]
+    step = n_train if batch_size <= 0 else batch_size
+
+    best_score = float("inf")
     best_epoch = 0
-    epochs_no_improve = 0
+    best_metrics: Dict[str, float] = {}
+    best_state: Optional[Dict[str, torch.Tensor]] = None
     history: List[Dict[str, float]] = []
+    started = time.perf_counter()
 
     try:
         for ep in range(1, epochs + 1):
             model.train()
-            tr_loss = 0.0
-            for Xb, yb in train_loader:
-                Xb, yb = Xb.to(device), yb.to(device)
-                pred = model(Xb)
-                loss = loss_fn(pred, yb)
-                opt.zero_grad()
+            perm = torch.randperm(n_train, device=device)
+            # Accumulate on-device: loss.item() here would sync once per step.
+            running = torch.zeros((), device=device)
+            for s in range(0, n_train, step):
+                idx = perm[s:s + step]
+                loss = loss_fn(model(X_train[idx]), y_train[idx])
+                opt.zero_grad(set_to_none=True)
                 loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 opt.step()
-                tr_loss += loss.item() * Xb.shape[0]
-            tr_loss /= len(train_loader.dataset)
+                running += loss.detach() * idx.numel()
+            tr_loss = float((running / n_train).item())
 
-            model.eval()
-            va_loss = 0.0
-            with torch.no_grad():
-                for Xb, yb in val_loader:
-                    Xb, yb = Xb.to(device), yb.to(device)
-                    pred = model(Xb)
-                    loss = loss_fn(pred, yb)
-                    va_loss += loss.item() * Xb.shape[0]
-            va_loss /= len(val_loader.dataset)
+            va_loss = evaluate(model, X_val, y_val, loss_fn)
+            scored = scorer is not None and (ep % rollout_every == 0 or ep == epochs)
+            roll = scorer.score(model) if scored else float("nan")
 
-            best_display = best_val if np.isfinite(best_val) else va_loss
-            delta = va_loss - best_display
+            if select_on == "rollout":
+                # Only scored epochs can be selected, so an unscored epoch is
+                # never silently preferred over a measured one.
+                candidate = roll if scored else float("inf")
+            else:
+                candidate = va_loss
+
+            is_best = candidate < best_score
+            if is_best:
+                best_score, best_epoch = candidate, ep
+                best_metrics = {"val": va_loss, "rollout": roll}
+                best_state = {
+                    k: v.detach().to("cpu").clone() for k, v in model.state_dict().items()
+                }
+
+            if checkpoint_every > 0 and ep % checkpoint_every == 0:
+                if checkpoint_dir is None:
+                    raise ValueError("checkpoint_dir is required when checkpointing is enabled")
+                path = checkpoint_dir / f"mlp_state_dict_epoch_{ep:05d}.pt"
+                torch.save(model.state_dict(), path)
+                print(f"Saved checkpoint: {path}")
+
             history.append(
                 {
                     "epoch": float(ep),
-                    "train": float(tr_loss),
-                    "val": float(va_loss),
-                    "best": float(best_display),
-                    "delta": float(delta),
-                    "no_improve": float(epochs_no_improve),
+                    "train": tr_loss,
+                    "val": va_loss,
+                    "rollout": roll,
+                    "is_best": 1.0 if is_best else 0.0,
+                    "elapsed_min": (time.perf_counter() - started) / 60.0,
                 }
             )
+            marker = " *best" if is_best else ""
+            roll_text = "" if np.isnan(roll) else f" | roll {roll:.4f}rad"
             print(
-                f"epoch {ep:03d} | train {tr_loss:.6f} | val {va_loss:.6f} | "
-                f"best {best_display:.6f} | delta {delta:+.6f} | "
-                f"no_improve {epochs_no_improve}"
+                f"epoch {ep:05d} | train {tr_loss:.6f} | val {va_loss:.6f}"
+                f"{roll_text} | {history[-1]['elapsed_min']:.1f} min{marker}"
             )
-            if live_plotter is not None and (ep % plot_every == 0 or ep == 1 or ep == epochs):
-                live_plotter.update(ep, tr_loss, va_loss, best_display)
-
-            if checkpoint_dir is not None and checkpoint_every > 0 and ep % checkpoint_every == 0:
-                ckpt_path = checkpoint_dir / f"mlp_state_dict_epoch_{ep:04d}.pt"
-                torch.save(model.state_dict(), ckpt_path)
-                print(f"Saved checkpoint: {ckpt_path}")
-
-            if va_loss < best_val - min_delta:
-                best_val = va_loss
-                best_epoch = ep
-                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-                epochs_no_improve = 0
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= patience:
-                    print(f"Early stopping at epoch {ep} (best epoch {best_epoch}, val {best_val:.6f})")
-                    break
     except KeyboardInterrupt:
         print("KeyboardInterrupt received. Stopping training and saving current artifacts.")
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
-    return model, history, best_epoch, best_val
-
-
-class LivePlotter:
-    def __init__(self, title: str = "Training Loss"):
-        # Lazy import so matplotlib is only required when plotting is enabled.
-        import matplotlib.pyplot as plt  # type: ignore
-
-        self._plt = plt
-        plt.ion()
-        self.fig, self.ax = plt.subplots()
-        self.ax.set_title(title)
-        self.ax.set_xlabel("Epoch")
-        self.ax.set_ylabel("Loss")
-        self.train_line, = self.ax.plot([], [], label="train")
-        self.val_line, = self.ax.plot([], [], label="val")
-        self.best_line, = self.ax.plot([], [], label="best", linestyle="--", alpha=0.6)
-        self.ax.legend()
-        self.epochs: List[int] = []
-        self.train: List[float] = []
-        self.val: List[float] = []
-        self.best: List[float] = []
-
-    def update(self, epoch: int, train_loss: float, val_loss: float, best_loss: float) -> None:
-        self.epochs.append(epoch)
-        self.train.append(float(train_loss))
-        self.val.append(float(val_loss))
-        self.best.append(float(best_loss))
-
-        self.train_line.set_data(self.epochs, self.train)
-        self.val_line.set_data(self.epochs, self.val)
-        self.best_line.set_data(self.epochs, self.best)
-        self.ax.relim()
-        self.ax.autoscale_view()
-        self.fig.canvas.draw_idle()
-        self._plt.pause(0.001)
-
-    def save(self, path: Path) -> None:
-        self.fig.savefig(path, dpi=150, bbox_inches="tight")
-
-
-def export_onnx(
-    model: nn.Module,
-    onnx_path: Path,
-    in_dim: int,
-):
-    model.eval()
-    device = next(model.parameters()).device
-    dummy = torch.randn(1, in_dim, dtype=torch.float32, device=device)
-    torch.onnx.export(
-        model,
-        dummy,
-        str(onnx_path),
-        input_names=["obs"],
-        output_names=["qdot_next"],
-        dynamic_axes={"obs": {0: "batch"}, "qdot_next": {0: "batch"}},
-        opset_version=17,
-    )
-    print(f"Exported ONNX to {onnx_path}")
+    if best_state is None:
+        raise RuntimeError("Training stopped before a single scored epoch completed")
+    return best_state, best_epoch, best_metrics, history
 
 
 def main(
     csv_path: str,
-    out_dir: str = "data_collection/nn/actuator_model_out",
+    out_dir: Optional[str] = None,
     *,
-    val_csv_path: Optional[str] = None,
-    dt: float = 0.02,
-    hist_qdot: Optional[int] = None,
-    hist_u: Optional[int] = None,
-    hist_qdot_sec: float = 0.1,
-    hist_u_sec: float = 1.0,
-    include_q: bool = True,
-    resample: bool = True,
-    hidden: List[int] = [128, 128],
-    epochs: int = 2000,
-    lr: float = 1e-3,
-    weight_decay: float = 1e-5,
-    batch_size: int = 2048,
-    patience: int = 2000,
-    min_delta: float = 1e-5,
-    do_export_onnx: bool = True,
-    save_xy: bool = False,
-    live_plot: bool = False,
-    plot_every: int = 1,
-    plot_save: Optional[str] = None,
-    checkpoint_every: int = 50,
+    epochs: int = 1800,
+    batch_size: int = 1024,
+    lr: float = 1e-4,
+    weight_decay: float = 1e-4,
+    checkpoint_every: int = 0,
+    seed: int = 0,
+    split_seed: int = 0,
+    val_fraction: float = 0.10,
+    split: str = "session",
+    snippet_sec: float = 10.0,
+    select_on: str = "rollout",
+    rollout_every: int = 5,
+    rollout_horizon_sec: float = 5.0,
+    rollout_starts: int = 256,
+    velocity_history_sec: float = 0.10,
+    command_history_sec: float = 0.99,
+    command_stride_sec: float = 0.03,
+    device: str = "auto",
 ):
-    out = Path(out_dir)
+    out = resolve_out_dir(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    print(f"Run directory: {out}")
+    checkpoint_dir = out / "checkpoints"
+    if checkpoint_every > 0:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        if checkpoint_every > epochs:
+            print(
+                f"WARNING: --checkpoint-every {checkpoint_every} exceeds --epochs {epochs}; "
+                "no checkpoint will be written. Note it now counts EPOCHS, not steps."
+            )
 
-    csv_path_resolved = Path(csv_path)
-    csv_files: List[Path] = []
-    if csv_path_resolved.is_file():
-        csv_files = [csv_path_resolved]
-    elif csv_path_resolved.is_dir():
-        csv_files = sorted(csv_path_resolved.glob("*.csv"))
-    else:
-        candidate = Path(__file__).resolve().parent / csv_path
-        if candidate.is_file():
-            csv_files = [candidate]
-        else:
-            csv_files = sorted(Path().glob(csv_path))
-
+    csv_files = resolve_csvs(csv_path)
     if not csv_files:
         raise FileNotFoundError(f"Could not resolve CSV input: {csv_path}")
 
-    val_csv_files: List[Path] = []
-    if val_csv_path is not None:
-        val_path_resolved = Path(val_csv_path)
-        if val_path_resolved.is_file():
-            val_csv_files = [val_path_resolved]
-        elif val_path_resolved.is_dir():
-            val_csv_files = sorted(val_path_resolved.glob("*.csv"))
-        else:
-            candidate = Path(__file__).resolve().parent / val_csv_path
-            if candidate.is_file():
-                val_csv_files = [candidate]
-            else:
-                val_csv_files = sorted(Path().glob(val_csv_path))
-        if not val_csv_files:
-            raise FileNotFoundError(f"Could not resolve validation CSV input: {val_csv_path}")
-
-    def _load_parts(files: List[Path], start_seg: int) -> Tuple[pd.DataFrame, int]:
-        dfs: List[pd.DataFrame] = []
-        global_seg = start_seg
-        for i, f in enumerate(files):
-            part = pd.read_csv(f)
-            # Logger records timestamps in seconds, matching --dt and the history horizons.
-            if TIME_COL in part.columns:
-                part[TIME_COL] = pd.to_numeric(part[TIME_COL], errors="coerce")
-            if SEGMENT_COL in part.columns:
-                seg_ids = sorted(part[SEGMENT_COL].dropna().unique())
-                seg_map = {old: idx + global_seg for idx, old in enumerate(seg_ids)}
-                part[SEGMENT_COL] = part[SEGMENT_COL].map(seg_map)
-                global_seg += len(seg_map)
-            else:
-                part[SEGMENT_COL] = global_seg + i
-            dfs.append(part)
-        df_local = pd.concat(dfs, axis=0, ignore_index=True)
-        return df_local, global_seg + (0 if any(SEGMENT_COL in pd.read_csv(f, nrows=0).columns for f in files) else len(files))
-
-    df, next_seg = _load_parts(csv_files, 0)
-    print(f"Loaded train CSV file(s)={len(csv_files)}, total rows={len(df)}")
-
-    # 1) derive history lengths from time horizons unless explicitly provided
-    hist_qdot_steps = int(hist_qdot) if hist_qdot is not None else max(1, int(round(hist_qdot_sec / dt)))
-    hist_u_steps = int(hist_u) if hist_u is not None else max(1, int(round(hist_u_sec / dt)))
-    spec = WindowSpec(
-        dt=dt,
-        hist_qdot=hist_qdot_steps,
-        hist_u=hist_u_steps,
-        include_q=include_q,
+    spec = WindowSpec.from_seconds(
+        velocity_history_sec, command_history_sec, command_stride_sec
     )
 
-    # 2) split into continuous segments and build per-segment datasets
-    train_segments = split_into_segments(df, TIME_COL, spec.dt)
-    train_pairs = build_dataset_from_segments(train_segments, spec, resample=resample)
-    if not train_pairs:
-        raise RuntimeError("No usable training data segments after cleaning/resampling. Check your logs and settings.")
-
-    if val_csv_files:
-        df_val, _ = _load_parts(val_csv_files, next_seg)
-        print(f"Loaded val CSV file(s)={len(val_csv_files)}, total rows={len(df_val)}")
-        val_segments = split_into_segments(df_val, TIME_COL, spec.dt)
-        val_pairs = build_dataset_from_segments(val_segments, spec, resample=resample)
-        if not val_pairs:
-            raise RuntimeError("No usable validation data segments after cleaning/resampling. Check your logs and settings.")
+    pool = build_pool(csv_files, spec, "pool")
+    if split == "session":
+        # Group by driving session, not by filename: the logger rolls files mid-drive
+        # under a fresh timestamp, so filename grouping would straddle the split.
+        chunk_sessions = session_ids(pool.names, pool.t_ends)
+        train_idx, val_idx, val_ranges, split_info = train_val_indices(
+            pool.counts,
+            chunk_sessions,
+            val_fraction=val_fraction,
+            seed=split_seed,
+            group_key="sessions",
+        )
+        session_of = dict(zip((recording_id(n) for n in pool.names), chunk_sessions))
+        val_sessions = set(split_info["validation_sessions"])
+        in_val = [session_of.get(recording_id(f.stem)) in val_sessions for f in csv_files]
+        split_info["train_files"] = [f.name for f, v in zip(csv_files, in_val) if not v]
+        split_info["validation_files"] = [f.name for f, v in zip(csv_files, in_val) if v]
     else:
-        n_segments = len(train_pairs)
-        n_train_segments = max(1, int(0.8 * n_segments))
-        if n_train_segments == n_segments and n_segments > 1:
-            n_train_segments = n_segments - 1
-        val_pairs = train_pairs[n_train_segments:] if n_segments > 1 else train_pairs[-1:]
-        train_pairs = train_pairs[:n_train_segments]
+        # Snippet split: every session contributes to training, at the cost of a
+        # validation set that is not independent at the session level.
+        train_idx, val_idx, val_ranges, split_info = snippet_train_val_indices(
+            pool.counts,
+            snippet_len=max(1, int(round(snippet_sec / spec.dt))),
+            val_fraction=val_fraction,
+            buffer=spec.history_samples,
+            seed=split_seed,
+        )
+        split_info["snippet_sec"] = float(snippet_sec)
+    with open(out / "split_manifest.json", "w", encoding="utf-8") as f:
+        json.dump(split_info, f, indent=2)
 
-    Xtr = np.concatenate([x for x, _ in train_pairs], axis=0)
-    ytr = np.concatenate([y for _, y in train_pairs], axis=0)
-    Xva = np.concatenate([x for x, _ in val_pairs], axis=0)
-    yva = np.concatenate([y for _, y in val_pairs], axis=0)
-    X = np.concatenate([Xtr, Xva], axis=0)
-    y = np.concatenate([ytr, yva], axis=0)
+    # Normalizers are fitted on training windows only -- never validation,
+    # never benchmark -- then applied to everything.
+    xnorm = Normalizer.fit(pool.X[train_idx])
+    ynorm = Normalizer.fit(pool.y[train_idx])
+    xnorm.save(out, "x")
+    ynorm.save(out, "y")
 
-    if save_xy:
-        np.save(out / "X.npy", X)
-        np.save(out / "y.npy", y)
-        print(f"Saved X/y to {out}")
+    horizon = max(1, int(round(rollout_horizon_sec / spec.dt)))
+    starts = make_starts(val_ranges, spec, horizon, rollout_starts, seed=split_seed)
 
-    # 4) normalize
-    xnorm = Normalizer.fit(Xtr)
-    ynorm = Normalizer.fit(ytr)
+    # In place: a normalized copy of the pool would be another ~300 MB.
+    xnorm.apply_inplace(pool.X)
+    ynorm.apply_inplace(pool.y)
+    dev = ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
+    if dev.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(
+            "--device cuda requested but this torch build has no CUDA support "
+            f"(torch {torch.__version__}, cuda build {torch.version.cuda}). "
+            "Install a CUDA wheel, or use --device cpu."
+        )
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if dev.startswith("cuda"):
+        torch.cuda.manual_seed_all(seed)
 
-    Xtr_n = xnorm.transform(Xtr)
-    Xva_n = xnorm.transform(Xva)
-    ytr_n = ynorm.transform(ytr)
-    yva_n = ynorm.transform(yva)
+    n_train = len(train_idx)
+    step = n_train if batch_size <= 0 else batch_size
+    steps_per_epoch = (n_train + step - 1) // step
 
-    # Save normalizers
-    np.save(out / "x_mean.npy", xnorm.mean)
-    np.save(out / "x_std.npy", xnorm.std)
-    np.save(out / "y_mean.npy", ynorm.mean)
-    np.save(out / "y_std.npy", ynorm.std)
-
-    # 5) train
     print(
-        "Training config:"
-        f" dt={spec.dt}, hist_qdot={spec.hist_qdot}, hist_u={spec.hist_u},"
-        f" include_q={spec.include_q}"
+        "\nTraining config:"
+        f" dt={spec.dt}, velocity_history={(spec.hist_qdot - 1) * spec.dt:.2f}s"
+        f" ({spec.hist_qdot} taps), command_history="
+        f"{(spec.hist_u - 1) * spec.dt * spec.u_stride:.2f}s"
+        f" ({spec.hist_u} taps at {spec.dt * spec.u_stride:.2f}s), hist_q={spec.hist_q}"
     )
     print(
-        f"Data shapes: X={X.shape}, y={y.shape}, "
-        f"segments={len(train_pairs) + len(val_pairs)}, train_segments={len(train_pairs)}, val_segments={len(val_pairs)}, "
-        f"train={Xtr.shape[0]}, val={Xva.shape[0]}"
+        f"Split: {split_info['split']}, "
+        + (f"{split_info['n_sessions']} sessions, {split_info['n_val_sessions']} to validation"
+           if split == "session" else
+           f"{split_info['n_snippets']} snippets of {snippet_sec:g}s, "
+           f"{split_info['n_val_snippets']} to validation")
+        + f" (seed {split_seed}); train={split_info['train_windows']}, "
+        f"val={split_info['val_windows']} "
+        f"({100.0 * split_info['actual_val_window_fraction']:.1f}% of windows), "
+        f"dropped={split_info['windows_dropped']}"
+    )
+    if split == "session":
+        print(f"Validation sessions: {', '.join(split_info['validation_sessions'])}")
+    print(
+        f"Model: hidden={HIDDEN}, activation={ACTIVATION}, target={TARGET_MODE}, "
+        f"lr={lr}, weight_decay={weight_decay}"
     )
     print(
-        f"Model: hidden={hidden}, epochs={epochs}, lr={lr}, "
-        f"weight_decay={weight_decay}, batch_size={batch_size}"
+        f"Batching: batch_size={'full' if batch_size <= 0 else batch_size}, "
+        f"steps/epoch={steps_per_epoch}, epochs={epochs}, "
+        f"total optimizer steps={steps_per_epoch * epochs:,}"
     )
-    train_ds = ActuatorDataset(Xtr_n, ytr_n)
-    val_ds = ActuatorDataset(Xva_n, yva_n)
+    print(
+        f"Selection: on {select_on}; rollout = {len(starts)} starts x "
+        f"{rollout_horizon_sec:g}s, scored every {rollout_every} epochs"
+    )
+    print(f"Device: {dev}")
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    def upload(x: np.ndarray) -> torch.Tensor:
+        return torch.from_numpy(np.ascontiguousarray(x)).float().to(dev)
 
-    live_plotter = LivePlotter() if live_plot else None
-    model = MLP(in_dim=X.shape[1], out_dim=y.shape[1], hidden=hidden)
-    model, history, best_epoch, best_val = train(
+    Xtr, ytr = upload(pool.X[train_idx]), upload(pool.y[train_idx])
+    Xva, yva = upload(pool.X[val_idx]), upload(pool.y[val_idx])
+    resident = sum(t.numel() * 4 for t in (Xtr, ytr, Xva, yva))
+    print(f"Resident on {dev}: {resident / 1e6:.0f} MB\n")
+
+    scorer = RolloutScorer(
+        spec, pool.q, pool.qdot, pool.u, starts, horizon,
+        xnorm.mean, xnorm.std, ynorm.mean, ynorm.std, dev,
+    )
+
+    model = MLP(in_dim=spec.in_dim, out_dim=pool.y.shape[1])
+    best_state, best_epoch, best_metrics, history = train(
         model,
-        train_loader,
-        val_loader,
+        Xtr, ytr, Xva, yva,
         epochs=epochs,
+        batch_size=batch_size,
         lr=lr,
         weight_decay=weight_decay,
-        patience=patience,
-        min_delta=min_delta,
-        live_plotter=live_plotter,
-        plot_every=plot_every,
+        device=dev,
+        scorer=scorer,
+        select_on=select_on,
+        rollout_every=rollout_every,
         checkpoint_every=checkpoint_every,
-        checkpoint_dir=out,
+        checkpoint_dir=checkpoint_dir,
     )
 
-    # Save torch weights
-    torch.save(model.state_dict(), out / "mlp_state_dict.pt")
+    torch.save(model.state_dict(), out / "mlp_state_dict_final.pt")
+    torch.save(best_state, out / "mlp_state_dict.pt")
+    print(
+        f"\nShipping best-on-{select_on} weights from epoch {best_epoch} "
+        f"(val {best_metrics['val']:.6f}, rollout {best_metrics['rollout']:.4f} rad); "
+        "final-epoch weights kept as mlp_state_dict_final.pt"
+    )
 
-    # Save training history for analysis
-    hist_path = out / "train_history.csv"
-    pd.DataFrame(history).to_csv(hist_path, index=False)
-    print(f"Saved training history to {hist_path} (best epoch {best_epoch}, val {best_val:.6f})")
-    if live_plotter is not None:
-        if plot_save:
-            live_plotter.save(Path(plot_save))
-            print(f"Saved training plot to {plot_save}")
-        else:
-            live_plotter.save(out / "train_plot.png")
-            print(f"Saved training plot to {out / 'train_plot.png'}")
+    hist_df = pd.DataFrame(history)
+    hist_df.to_csv(out / "train_history.csv", index=False)
+    print(f"Saved training history to {out / 'train_history.csv'} "
+          f"({len(history)} epochs)")
 
-    # Save model/spec metadata for sim-side inference
-    meta = {
-        "dt": spec.dt,
-        "hist_qdot": spec.hist_qdot,
-        "hist_u": spec.hist_u,
-        "hist_qdot_sec": float(spec.hist_qdot * spec.dt),
-        "hist_u_sec": float(spec.hist_u * spec.dt),
-        "include_q": spec.include_q,
-        "time_col": TIME_COL,
-        "u_cols": U_COLS,
-        "q_cols": Q_COLS,
-        "qdot_cols": QDOT_COLS,
-        "units": {
-            "timestamp_raw": "s",
-            "joint_position": "rad",
-            "joint_velocity": "rad/s",
-            "command": "normalized_-1_to_1",
-        },
-        "model": {
-            "hidden": hidden,
-            "in_dim": int(X.shape[1]),
-            "out_dim": int(y.shape[1]),
-        },
+    meta = spec.to_meta()
+    meta["training"] = {
+        "epochs": epochs,
+        "epochs_completed": len(history),
+        "batch_size": int(step),
+        "steps_per_epoch": int(steps_per_epoch),
+        "learning_rate": lr,
+        "weight_decay": weight_decay,
+        "checkpoint_every": checkpoint_every,
+        "seed": seed,
+        "select_on": select_on,
+        "rollout_every": int(rollout_every),
+        "rollout_horizon_sec": float(rollout_horizon_sec),
+        "rollout_starts": int(len(starts)),
+        "best_epoch": int(best_epoch),
+        "best_val_loss": float(best_metrics["val"]),
+        "best_rollout_error_rad": float(best_metrics["rollout"]),
+        "final_val_loss": float(hist_df["val"].iloc[-1]),
+        "shipped_weights": f"best_on_{select_on}",
+        "pool_files": [f.name for f in csv_files],
+        **split_info,
     }
     with open(out / "model_meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    # 6) export ONNX
-    if do_export_onnx:
-        export_onnx(model, out / "actuator_mlp.onnx", in_dim=X.shape[1])
+    print(
+        f"\nDeployable model written to {out}:\n  "
+        + "\n  ".join(
+             ["mlp_state_dict.pt", "model_meta.json", "split_manifest.json",
+              "x_mean.npy", "x_std.npy", "y_mean.npy", "y_std.npy"]
+        )
+    )
 
 
 if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--csv", required=True, help="Input CSV file, directory, or glob pattern")
-    p.add_argument("--val-csv", default=None, help="Optional validation CSV file, directory, or glob pattern")
-    p.add_argument("--out", default="data_collection/nn/actuator_model_out", help="Output directory")
-    p.add_argument("--dt", type=float, default=0.01, help="Resample dt (s) — match your data logging rate")
-    p.add_argument("--hist-qdot", type=int, default=None, help="Optional direct history length for qdot")
-    p.add_argument("--hist-u", type=int, default=None, help="Optional direct history length for u")
-    p.add_argument("--hist-qdot-sec", type=float, default=0.1, help="qdot history horizon in seconds (paper: 0.1 s)")
-    p.add_argument("--hist-u-sec",    type=float, default=1.0, help="u history horizon in seconds   (paper: ~0.99 s)")
-    p.add_argument("--no-resample", action="store_true", help="Disable resampling to fixed dt")
-    p.add_argument("--no-q", action="store_true", help="Exclude current q from input")
-    p.add_argument("--hidden", default="128,128", help="MLP hidden sizes, comma-separated")
-    p.add_argument("--epochs", type=int, default=2000, help="Training epochs")
-    p.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    p.add_argument("--weight-decay", type=float, default=1e-5, help="Weight decay")
-    p.add_argument("--batch-size", type=int, default=2048, help="Batch size")
-    p.add_argument("--patience", type=int, default=2000, help="Early stopping patience")
-    p.add_argument("--min-delta", type=float, default=1e-5, help="Min val improvement for early stop")
-    p.add_argument("--no-onnx", action="store_true", help="Skip ONNX export")
-    p.add_argument("--save-xy", action="store_true", help="Save X.npy and y.npy")
-    p.add_argument("--plot", action="store_true", help="Show live training plot")
-    p.add_argument("--plot-every", type=int, default=1, help="Update plot every N epochs")
-    p.add_argument("--plot-save", default=None, help="Optional path to save plot image")
-    p.add_argument("--checkpoint-every", type=int, default=50, help="Save model checkpoint every N epochs")
+    import sys
+
+    # Windows consoles default to cp1252, which blows up on non-ASCII library output
+    # (and block-buffers when redirected to a file, scrambling the log order).
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
+    p = argparse.ArgumentParser(
+        description="Train the three-joint hydraulic actuator model.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    io = p.add_argument_group("data and output")
+    io.add_argument(
+        "--csv", required=True,
+        help="Training CSV file, directory, or glob. Relative paths are tried "
+             "against the working directory, then against this script's directory.",
+    )
+    io.add_argument(
+        "--out", default=None,
+        help="Run directory; relative paths are resolved against this script. "
+             "Defaults to a fresh runs/<timestamp>, never the deployed model/.",
+    )
+    io.add_argument("--device", default="auto", help="auto | cpu | cuda | cuda:0")
+
+    opt = p.add_argument_group("optimization")
+    opt.add_argument("--epochs", type=int, default=1800, help="Fixed epoch budget; always runs fully")
+    opt.add_argument("--batch-size", type=int, default=1024, help="Minibatch size; 0 = full batch")
+    opt.add_argument("--lr", type=float, default=1e-4, help="Largest observed effect; lower needs more epochs")
+    opt.add_argument("--weight-decay", type=float, default=1e-4)
+    opt.add_argument("--seed", type=int, default=0, help="Weight-init seed")
+    opt.add_argument(
+        "--checkpoint-every", type=int, default=0,
+        help="Save weights every N epochs (not steps); 0 disables. Needed to "
+             "compare intermediate epochs after the fact -- the shipped and "
+             "final weights alone cannot reconstruct the trajectory.",
+    )
+
+    sp = p.add_argument_group("train/validation split")
+    sp.add_argument(
+        "--split", default="session", choices=["session", "snippet"],
+        help="session: hold out whole drives -- honest generalization measurement. "
+             "snippet: hold out contiguous snippets from every drive -- keeps all "
+             "sessions in training, which measured stronger on the external benchmark.",
+    )
+    sp.add_argument("--val-fraction", type=float, default=0.10)
+    sp.add_argument(
+        "--split-seed", type=int, default=0,
+        help="Kept separate from --seed so a weight-init sweep does not silently "
+             "re-split the data (which would also refit the normalizers)",
+    )
+    sp.add_argument(
+        "--snippet-sec", type=float, default=10.0,
+        help="Snippet length for --split snippet. Shorter costs more to the "
+             "leakage buffer: roughly 2*val_fraction*history/snippet_len.",
+    )
+
+    ro = p.add_argument_group("checkpoint selection (free-running rollout)")
+    ro.add_argument(
+        "--select-on", default="rollout", choices=["rollout", "val"],
+        help="Selection metric: free-running position error, or one-step MSE. "
+             "At 100 Hz one-step MSE mis-ranks free-running models -- 'val' is "
+             "kept mainly so that result stays reproducible.",
+    )
+    ro.add_argument("--rollout-every", type=int, default=5, help="Score rollouts every N epochs")
+    ro.add_argument("--rollout-horizon-sec", type=float, default=5.0)
+    ro.add_argument("--rollout-starts", type=int, default=256)
+
+    win = p.add_argument_group("input window geometry")
+    win.add_argument("--velocity-history-sec", type=float, default=0.10)
+    win.add_argument("--command-history-sec", type=float, default=0.99)
+    win.add_argument(
+        "--command-stride-sec", type=float, default=0.03,
+        help="Spacing between command history taps, not a normalization knob",
+    )
+
     args = p.parse_args()
 
-    hidden = [int(x) for x in args.hidden.split(",") if x.strip()]
     main(
         args.csv,
         args.out,
-        val_csv_path=args.val_csv,
-        dt=args.dt,
-        hist_qdot=args.hist_qdot,
-        hist_u=args.hist_u,
-        hist_qdot_sec=args.hist_qdot_sec,
-        hist_u_sec=args.hist_u_sec,
-        include_q=not args.no_q,
-        resample=not args.no_resample,
-        hidden=hidden,
         epochs=args.epochs,
+        batch_size=args.batch_size,
         lr=args.lr,
         weight_decay=args.weight_decay,
-        batch_size=args.batch_size,
-        patience=args.patience,
-        min_delta=args.min_delta,
-        do_export_onnx=not args.no_onnx,
-        save_xy=args.save_xy,
-        live_plot=args.plot,
-        plot_every=max(args.plot_every, 1),
-        plot_save=args.plot_save,
-        checkpoint_every=max(args.checkpoint_every, 1),
+        checkpoint_every=max(args.checkpoint_every, 0),
+        seed=args.seed,
+        split_seed=args.split_seed,
+        val_fraction=args.val_fraction,
+        split=args.split,
+        snippet_sec=args.snippet_sec,
+        select_on=args.select_on,
+        rollout_every=max(args.rollout_every, 1),
+        rollout_horizon_sec=args.rollout_horizon_sec,
+        rollout_starts=args.rollout_starts,
+        velocity_history_sec=args.velocity_history_sec,
+        command_history_sec=args.command_history_sec,
+        command_stride_sec=args.command_stride_sec,
+        device=args.device,
     )

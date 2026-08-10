@@ -1,0 +1,11 @@
+# Training data and experiment output stay local.
+/data
+/data_clean
+/data_bench
+/runs
+/plots
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/

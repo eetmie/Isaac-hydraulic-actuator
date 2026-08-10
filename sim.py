@@ -1,18 +1,21 @@
 """
-MASI excavator sim — hydraulic actuator net + gamepad teleop.
+Excavator sim — hydraulic actuator net + gamepad teleop.
+
+USD joint names map to the model's joint order as lift=boom, tilt=arm, tool=bucket.
 
 Gamepad bindings (Xbox layout):
   Left  stick  Y  : tilt   command
   Left  stick  X  : carriage rotate → VelocityIntegratedActuator (always direct)
   Right stick  Y  : lift   command
   Right stick  X  : tool   command
-  A              : toggle DIRECT / NN mode
+  A              : toggle MANUAL / NN command source
   B              : reset joints to default pose
-  dead zone      : 20 %
+  dead zone      : 30 %
 
-DIRECT mode  — sticks scale to rad/s directly → VelocityIntegratedActuator
-NN mode      — sticks are valve commands [-1,1] → HydraulicActuatorNet
-               → predicted qdot [rad/s] → VelocityIntegratedActuator
+MANUAL mode — sticks scale directly to arm velocity
+NN mode     — sticks are valve commands [-1,1] → HydraulicActuatorNet → predicted qdot
+
+Both command sources use the integration route selected by --integration.
 """
 
 from __future__ import annotations
@@ -22,12 +25,55 @@ import os
 import sys
 import weakref
 
+sys.path.insert(0, os.path.dirname(__file__))
+from sim_common import (  # noqa: E402
+    ARM_DAMPING,
+    ARM_JOINT_NAMES,
+    ARM_STIFFNESS,
+    CARRIAGE_DAMPING,
+    CARRIAGE_STIFFNESS,
+    DISABLE_ROBOT_GRAVITY,
+    GRIPPER_DAMPING,
+    GRIPPER_JOINT_NAMES,
+    GRIPPER_STIFFNESS,
+    NN_ARM_VEL_LIMIT_DEFAULT,
+    NN_ARM_VEL_WARN_DEFAULT,
+    SIM_HZ,
+    SOLVER_VELOCITY_ITERATIONS,
+    configure_arm_drive,
+    sanitize_velocity_prediction,
+)
+
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="MASI NN sim with gamepad teleop")
+parser = argparse.ArgumentParser(description="Excavator NN sim with gamepad teleop")
 parser.add_argument("--num_envs", type=int, default=1)
+parser.add_argument(
+    "--model",
+    default=os.path.join(os.path.dirname(__file__), "model"),
+    help="Directory containing the trained actuator model artifact",
+)
+parser.add_argument("--weights", default=None, help="Optional checkpoint state dict")
+parser.add_argument(
+    "--integration", choices=["direct", "target"], default="direct",
+    help="direct: learned model integrates joint state and writes it to the sim "
+          "(Egli & Hutter convention -- the model IS the dynamics). "
+          "target: integrate into a position target and let the articulation PD drive track it.",
+)
+parser.add_argument(
+    "--vel-limit", type=float, default=NN_ARM_VEL_LIMIT_DEFAULT,
+    help="Hard safety clamp on NN-predicted arm velocity [rad/s]",
+)
+parser.add_argument(
+    "--vel-warn", type=float, default=NN_ARM_VEL_WARN_DEFAULT,
+    help="Warn, but do not clamp, above this NN-predicted arm speed [rad/s]",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+if args_cli.vel_limit <= 0.0:
+    parser.error("--vel-limit must be positive")
+if args_cli.vel_warn < 0.0:
+    parser.error("--vel-warn must be non-negative")
 args_cli.num_envs = 1          # teleop always single env
 
 app_launcher = AppLauncher(args_cli)
@@ -49,25 +95,28 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.utils import configclass
 
-sys.path.insert(0, os.path.dirname(__file__))
-from actuators import HydraulicActuatorNet, VelocityIntegratedActuator  # noqa: E402
+from actuators import (  # noqa: E402
+    HydraulicActuatorNet,
+    VelocityIntegratedActuator,
+    DirectIntegrationActuator,
+)
 
 # ── constants ──────────────────────────────────────────────────────────────
 
-MODEL_DIR        = os.path.join(os.path.dirname(__file__), "model")
+MODEL_DIR        = args_cli.model
 ROBOT_USD        = os.path.join(os.path.dirname(__file__), "assets", "excavator.usd")
-CONTROL_DECIMATION = 1       # physics and NN both at 50 Hz
-ARM_JOINT_NAMES  = ["revolute_lift", "revolute_tilt", "revolute_tool"]
+CONTROL_DECIMATION = 1       # physics and NN run at the same rate
 DEAD_ZONE        = 0.30
 CARRIAGE_VEL_MAX = 0.8   # rad/s
 ARM_VEL_MAX      = 0.5   # rad/s — direct mode arm velocity scale
-NN_ARM_VEL_MAX   = 0.5   # rad/s — safety clamp for NN-predicted arm velocity
+NN_ARM_VEL_MAX   = args_cli.vel_limit
+NN_ARM_VEL_WARN  = args_cli.vel_warn
 
 
 # ── scene ──────────────────────────────────────────────────────────────────
 
 @configclass
-class MasiTestSceneCfg(InteractiveSceneCfg):
+class ExcavatorSceneCfg(InteractiveSceneCfg):
     dome_light = AssetBaseCfg(
         prim_path="/World/Light",
         spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75)),
@@ -81,8 +130,10 @@ class MasiTestSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.UsdFileCfg(
             usd_path=ROBOT_USD,
             copy_from_source=True,
+            # The learned velocity already includes the real machine's gravity response.
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=DISABLE_ROBOT_GRAVITY),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                solver_velocity_iteration_count=1,
+                solver_velocity_iteration_count=SOLVER_VELOCITY_ITERATIONS,
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
@@ -96,15 +147,20 @@ class MasiTestSceneCfg(InteractiveSceneCfg):
             joint_vel={".*": 0.0},
         ),
         actuators={
-            "main_joints": ImplicitActuatorCfg(
-                joint_names_expr=["revolute_carriage", "revolute_lift", "revolute_tilt", "revolute_tool"],
-                stiffness=600.0,
-                damping=40.0,
+            "arm": ImplicitActuatorCfg(
+                joint_names_expr=ARM_JOINT_NAMES,
+                stiffness=ARM_STIFFNESS,
+                damping=ARM_DAMPING,
             ),
-            "tool": ImplicitActuatorCfg(
-                joint_names_expr=["revolute_gripper", "revolute_claw_1", "revolute_claw_2"],
-                stiffness=600.0,
-                damping=40.0,
+            "carriage": ImplicitActuatorCfg(
+                joint_names_expr=["revolute_carriage"],
+                stiffness=CARRIAGE_STIFFNESS,
+                damping=CARRIAGE_DAMPING,
+            ),
+            "gripper": ImplicitActuatorCfg(
+                joint_names_expr=GRIPPER_JOINT_NAMES,
+                stiffness=GRIPPER_STIFFNESS,
+                damping=GRIPPER_DAMPING,
             ),
         },
     )
@@ -199,7 +255,7 @@ class XboxController:
 
 def main():
     sim_cfg = sim_utils.SimulationCfg(
-        dt=0.02,
+        dt=1.0 / SIM_HZ,
         render_interval=1,
         device=args_cli.device,
         physx=sim_utils.PhysxCfg(enable_external_forces_every_iteration=True),
@@ -207,7 +263,7 @@ def main():
     sim = sim_utils.SimulationContext(sim_cfg)
     sim.set_camera_view([3.0, 3.0, 2.0], [0.0, 0.0, 0.5])
 
-    scene_cfg = MasiTestSceneCfg(num_envs=1, env_spacing=4.0)
+    scene_cfg = ExcavatorSceneCfg(num_envs=1, env_spacing=4.0)
     scene     = InteractiveScene(scene_cfg)
 
     # Fix lower_carriage to world programmatically (avoids USD edit)
@@ -226,13 +282,22 @@ def main():
 
     sim_dt = sim.get_physics_dt()
 
-    # VelocityIntegratedActuator for arm joints (NN drives velocity)
-    arm_actuator = VelocityIntegratedActuator(
+    # Arm joints: the learned model drives velocity. Two conventions --
+    #   direct : integrate to joint state and write it (model is the dynamics, paper-style)
+    #   target : integrate to a position target and let the PD drive chase it
+    ArmActuator = (DirectIntegrationActuator if args_cli.integration == "direct"
+                   else VelocityIntegratedActuator)
+    arm_actuator = ArmActuator(
         scene=scene,
         joint_names=ARM_JOINT_NAMES,
         sim_dt=sim_dt,
         clamp_to_limits=True,
     )
+    direct_integration = args_cli.integration == "direct"
+    configure_arm_drive(robot, arm_actuator.joint_ids, direct=direct_integration)
+    print(f"[INFO] Arm integration mode: {args_cli.integration}")
+    print(f"[INFO] Robot gravity disabled: {DISABLE_ROBOT_GRAVITY}")
+    print(f"[INFO] NN velocity warning/clamp: {NN_ARM_VEL_WARN:g}/{NN_ARM_VEL_MAX:g} rad/s")
     print("[INFO] Arm joints resolved:", list(zip(arm_actuator.joint_ids, ARM_JOINT_NAMES)))
 
     # VelocityIntegratedActuator for carriage (gamepad drives velocity directly)
@@ -245,10 +310,16 @@ def main():
     print("[INFO] Carriage joint resolved:", list(zip(carriage_actuator.joint_ids, carriage_actuator.joint_names)))
 
     # Hydraulic NN controller (predicts arm joint velocity from valve commands)
-    controller = HydraulicActuatorNet(MODEL_DIR, device=args_cli.device)
+    controller = HydraulicActuatorNet(
+        MODEL_DIR,
+        device=args_cli.device,
+        sim_dt=sim_dt * CONTROL_DECIMATION,
+        weights=args_cli.weights,
+    )
     controller.reset()
     print(f"[INFO] Controller ready — dt={controller.dt}s  "
-          f"hist_qdot={controller.hist_qdot}  hist_u={controller.hist_u}")
+          f"hist_qdot={controller.hist_qdot}  hist_u={controller.hist_u}  "
+          f"target={controller.target_mode}")
 
     # Gamepad
     teleop = XboxController()
@@ -260,17 +331,19 @@ def main():
     print("[INFO] Controls:")
     print("  Left  Y  : tilt  Right Y : lift")
     print("  Left  X  : carriage    Right X : tool")
-    print("  A        : toggle DIRECT / NN mode")
+    print("  A        : toggle MANUAL / NN command source")
     print("  B        : reset")
 
     use_nn = True
     print("[INFO] Starting in NN mode")
 
-    # Persistent command tensors — updated at 50 Hz, applied every physics step
+    # Persistent command tensors — updated at the control rate, applied every physics step
     _dev           = robot.data.joint_pos.device
     arm_vel_t      = torch.zeros(1, len(ARM_JOINT_NAMES), device=_dev)
     carriage_vel_t = torch.zeros(1, 1, device=_dev)
     u              = np.zeros(3, dtype=np.float32)
+    velocity_warning_active = False
+    velocity_clamp_active = False
 
     step = 0
     while simulation_app.is_running():
@@ -280,46 +353,62 @@ def main():
             use_nn = not use_nn
             controller.reset()
             arm_actuator.reset()
-            print(f"[step {step}] Mode → {'NN' if use_nn else 'DIRECT'}")
+            print(f"[step {step}] Mode → {'NN' if use_nn else 'MANUAL'}")
 
         # ── reset ──────────────────────────────────────────────────────────
         if teleop.reset_requested():
             robot.write_joint_state_to_sim(default_pos, default_vel)
-            scene.write_data_to_sim()
-            sim.step()
-            scene.update(sim.get_physics_dt())
+            robot.set_joint_position_target(default_pos)
+            robot.set_joint_velocity_target(default_vel)
             controller.reset()
             arm_actuator.reset()
             carriage_actuator.reset()
             arm_vel_t[:] = 0.0
             carriage_vel_t[:] = 0.0
             u[:] = 0.0
+            scene.write_data_to_sim()
+            if direct_integration:
+                arm_actuator.sync_to_sim()
             print(f"[step {step}] Reset")
             continue
 
-        # ── update commands at control rate (50 Hz) ───────────────────────
+        # ── update commands at the 100 Hz control rate ────────────────────
         if step % CONTROL_DECIMATION == 0:
-            joint_pos = robot.data.joint_pos   # [1, n_joints]
-            joint_vel = robot.data.joint_vel
-
             arm_ids = arm_actuator.joint_ids
-            q    = joint_pos[0, arm_ids].cpu().numpy()   # rad
-            qdot = joint_vel[0, arm_ids].cpu().numpy()   # rad/s
+            if direct_integration:
+                q = arm_actuator.position[0].cpu().numpy()
+                qdot = arm_actuator.velocity[0].cpu().numpy()
+            else:
+                q = robot.data.joint_pos[0, arm_ids].cpu().numpy()
+                qdot = robot.data.joint_vel[0, arm_ids].cpu().numpy()
 
             lift_cmd, carriage_vel_norm, tilt_cmd, tool_cmd = teleop.read()
             u = np.array([lift_cmd, tilt_cmd, tool_cmd], dtype=np.float32)
 
             if use_nn:
                 qdot_pred = controller.predict_velocity(q, qdot, u)   # [3] rad/s
-                qdot_pred = np.clip(qdot_pred, -NN_ARM_VEL_MAX, NN_ARM_VEL_MAX)
-                arm_vel_t = torch.from_numpy(qdot_pred).unsqueeze(0).to(joint_pos.device)
+                qdot_pred, max_abs_vel, finite, clipped = sanitize_velocity_prediction(
+                    qdot_pred, NN_ARM_VEL_MAX
+                )
+                if not finite:
+                    print(f"[step {step}] [WARN] Non-finite NN velocity prediction; commanding zero")
+                over_warning = max_abs_vel > NN_ARM_VEL_WARN
+                if over_warning and not velocity_warning_active:
+                    print(f"[step {step}] [WARN] NN velocity reached {max_abs_vel:.3f} rad/s "
+                          f"(warning threshold {NN_ARM_VEL_WARN:g}; still allowed)")
+                if clipped and not velocity_clamp_active:
+                    print(f"[step {step}] [WARN] NN velocity reached {max_abs_vel:.3f} rad/s; "
+                          f"clamped to {NN_ARM_VEL_MAX:g}")
+                velocity_warning_active = over_warning
+                velocity_clamp_active = clipped
+                arm_vel_t = torch.from_numpy(qdot_pred).unsqueeze(0).to(robot.data.joint_pos.device)
             else:
                 arm_vel_t = torch.tensor(
                     [[lift_cmd * ARM_VEL_MAX, tilt_cmd * ARM_VEL_MAX, tool_cmd * ARM_VEL_MAX]],
-                    device=joint_pos.device,
+                    device=robot.data.joint_pos.device,
                 )
             carriage_vel_t = torch.tensor(
-                [[carriage_vel_norm * CARRIAGE_VEL_MAX]], device=joint_pos.device
+                [[carriage_vel_norm * CARRIAGE_VEL_MAX]], device=robot.data.joint_pos.device
             )
 
         # ── apply held commands every physics step ────────────────────────
@@ -328,13 +417,18 @@ def main():
 
         # ── step ──────────────────────────────────────────────────────────
         scene.write_data_to_sim()
-        sim.step()
+        sim.step(render=not direct_integration)
         scene.update(sim.get_physics_dt())
+        if direct_integration:
+            # PhysX advances prescribed velocity during its step. Restore the learned
+            # sample before feedback, logging, and rendering so it is not integrated twice.
+            arm_actuator.sync_to_sim()
+            sim.render()
 
         if step % 200 == 0:
             p = robot.data.joint_pos[0, arm_actuator.joint_ids].cpu().numpy()
             arm_vel_dbg = arm_vel_t.squeeze(0).detach().cpu().numpy()
-            print(f"[step {step:6d}]  mode={'NN' if use_nn else 'DIRECT'}  u={u}  "
+            print(f"[step {step:6d}]  mode={'NN' if use_nn else 'MANUAL'}  u={u}  "
                   f"qdot_cmd={arm_vel_dbg}  "
                   f"lift={p[0]:.3f}  tilt={p[1]:.3f}  tool={p[2]:.3f}  rad")
         step += 1

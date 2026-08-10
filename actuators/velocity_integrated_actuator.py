@@ -20,8 +20,14 @@ Intended usage (example):
 
 Notes:
 - This class treats the incoming commands strictly as joint velocities.
-- Clamping to joint limits (soft limits) is optional.
 - No dependencies on IMUs or frame transformers.
+- Clamping to soft joint limits is on by default and should stay on here. Unlike
+  DirectIntegrationActuator, this class integrates into a *setpoint* the PD chases, so an
+  unclamped target keeps accumulating past the physical limit. The joint would then refuse
+  to move back until the whole excursion had been unwound -- a stick that does nothing for
+  several seconds. The clamp is the anti-windup, not a speed limit.
+- This class leaves the articulation drive live and relies on it. That is the whole point
+  of the "target" route: PhysX's PD is the thing doing the work.
 """
 
 from __future__ import annotations
@@ -57,8 +63,15 @@ class VelocityIntegratedActuator:
         self.sim_dt = float(sim_dt)
         self.clamp_to_limits = bool(clamp_to_limits)
 
-        # Resolve joint indices in the same order as provided names
-        self.joint_ids, _ = self.robot.find_joints(self.joint_names)
+        # Resolve joint indices in the same order as provided names.
+        # preserve_order=True: find_joints() defaults to articulation order, which is not
+        # necessarily the order of joint_names. The learned model is order-sensitive
+        # ([lift, tilt, tool]), so a silent permutation here would scramble it.
+        self.joint_ids, resolved_names = self.robot.find_joints(self.joint_names, preserve_order=True)
+        if resolved_names != self.joint_names:
+            raise RuntimeError(
+                f"Joint resolution changed order: asked for {self.joint_names}, got {resolved_names}"
+            )
         self.num_joints = len(self.joint_ids)
 
         # Initialize target positions from current robot joint positions
@@ -94,16 +107,21 @@ class VelocityIntegratedActuator:
         # Integrate v*dt into target positions
         self._target_position = self._target_position + velocity_commands * self.sim_dt
 
-        # Optional: clamp to soft limits
+        # Anti-windup: keep the setpoint inside the reachable range (see module docstring)
         if self.clamp_to_limits and self._joint_pos_limits is not None:
             self._target_position = torch.clamp(
                 self._target_position,
                 min=self._joint_pos_limits[:, :, 0],
                 max=self._joint_pos_limits[:, :, 1],
             )
-    
+
         # Send position targets to robot PD controller
         self.robot.set_joint_position_target(self._target_position, joint_ids=self.joint_ids)
+
+    @property
+    def target_position(self) -> torch.Tensor:
+        """The integrated position setpoint currently handed to the PD drive."""
+        return self._target_position
 
 
 __all__ = ["VelocityIntegratedActuator"]
