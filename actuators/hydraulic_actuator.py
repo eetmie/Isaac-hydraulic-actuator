@@ -99,11 +99,24 @@ class HydraulicActuatorNet:
         self._y_mean = torch.from_numpy(np.load(model_dir / "y_mean.npy")).float().to(device)
         self._y_std  = torch.from_numpy(np.load(model_dir / "y_std.npy")).float().to(device)
 
-        if self._x_mean.numel() != in_dim:
-            raise ValueError(
-                f"Normalizer input dim mismatch: model expects {in_dim}, "
-                f"x_mean has {self._x_mean.numel()}"
-            )
+        expected_sizes = {
+            "x_mean": (self._x_mean, in_dim),
+            "x_std": (self._x_std, in_dim),
+            "y_mean": (self._y_mean, out_dim),
+            "y_std": (self._y_std, out_dim),
+        }
+        bad_sizes = [
+            name for name, (value, size) in expected_sizes.items()
+            if value.numel() != size
+        ]
+        if bad_sizes:
+            raise ValueError(f"Normalizer dimensions do not match model metadata: {bad_sizes}")
+        if out_dim != self.N_JOINTS:
+            raise ValueError(f"Model output dim must be {self.N_JOINTS}, got {out_dim}")
+        if not all(torch.isfinite(value).all() for value, _ in expected_sizes.values()):
+            raise ValueError("Normalizer contains non-finite values")
+        if torch.any(self._x_std <= 0) or torch.any(self._y_std <= 0):
+            raise ValueError("Normalizer standard deviations must be positive")
 
         self._model = MLP(in_dim, out_dim, hidden).to(device)
         weights_path = Path(weights) if weights is not None else model_dir / "mlp_state_dict.pt"
@@ -148,6 +161,23 @@ class HydraulicActuatorNet:
         self._q_buf[:] = 0.0
         self._q_primed = False
 
+    @classmethod
+    def _joint_vector(cls, value, name: str) -> np.ndarray:
+        """Return one finite [boom, arm, bucket] float32 vector."""
+        vector = np.asarray(value, dtype=np.float32)
+        if vector.shape != (cls.N_JOINTS,):
+            raise ValueError(f"{name} must have shape ({cls.N_JOINTS},), got {vector.shape}")
+        if not np.isfinite(vector).all():
+            raise ValueError(f"{name} contains non-finite values")
+        return vector
+
+    @staticmethod
+    def _push(buffer: np.ndarray, value: np.ndarray) -> None:
+        """Push a newest sample without allocating on every control tick."""
+        if len(buffer) > 1:
+            buffer[1:] = buffer[:-1]
+        buffer[0] = value
+
     def predict_velocity(
         self,
         q_rad: np.ndarray,
@@ -170,23 +200,22 @@ class HydraulicActuatorNet:
         -------
         qdot_pred_rad_s : [3] predicted joint velocities in rad/s
         """
-        q    = np.asarray(q_rad,      dtype=np.float32)
-        qdot = np.asarray(qdot_rad_s, dtype=np.float32)
-        u    = np.asarray(u,          dtype=np.float32)
+        q = self._joint_vector(q_rad, "q_rad")
+        qdot = self._joint_vector(qdot_rad_s, "qdot_rad_s")
+        u = self._joint_vector(u, "u")
+        if np.max(np.abs(u)) > 1.001:
+            raise ValueError("u contains a valve command outside [-1, 1]")
 
         # Push newest readings into ring buffers
         if not self._q_primed:
             self._q_buf[:] = q            # repeat first observation, as training pads
             self._q_primed = True
         else:
-            self._q_buf = np.roll(self._q_buf, shift=1, axis=0)
-            self._q_buf[0] = q
-        self._qdot_buf = np.roll(self._qdot_buf, shift=1, axis=0)
-        self._qdot_buf[0] = qdot
-        self._u_buf = np.roll(self._u_buf, shift=1, axis=0)
-        self._u_buf[0] = u
+            self._push(self._q_buf, q)
+        self._push(self._qdot_buf, qdot)
+        self._push(self._u_buf, u)
 
-        # Build feature vector — must match build_supervised_xy ordering in train.py
+        # Build feature vector — must match dataset.build_features ordering
         feats: List[np.ndarray] = []
         if self._has_q:
             feats.append(self._q_buf.flatten())                     # [hist_q * 3]
@@ -229,8 +258,8 @@ class HydraulicActuatorNet:
         Same as predict() but accepts and returns torch Tensors (shape [3]).
         """
         q_next = self.predict(
-            q_rad.cpu().numpy(),
-            qdot_rad_s.cpu().numpy(),
-            u.cpu().numpy(),
+            q_rad.detach().cpu().numpy(),
+            qdot_rad_s.detach().cpu().numpy(),
+            u.detach().cpu().numpy(),
         )
-        return torch.from_numpy(q_next).to(q_rad.device)
+        return torch.from_numpy(q_next).to(device=q_rad.device, dtype=q_rad.dtype)

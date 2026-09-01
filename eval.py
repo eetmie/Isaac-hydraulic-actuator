@@ -14,7 +14,7 @@ reconstructs the absolute next velocity before reporting metrics, so metrics
 remain in physical rad/s and rad units.
 
 Usage:
-    python eval.py --model model --csv "held_out/*.csv"
+    python eval.py --model model --data "held_out/*.parquet"
 
 Metrics:
   1. ONE-STEP     teacher-forced R2 / RMSE, against a persistence baseline
@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from dataset import MLP, Normalizer, WindowSpec, build_features, load_chunks, resolve_csvs
+from dataset import MLP, Normalizer, WindowSpec, build_features, load_chunks, resolve_data_files
 
 JOINTS = ["boom", "arm", "bucket"]
 
@@ -210,7 +210,8 @@ def compute_metrics(R: "Rollout", q, qdot, u, n_track=24, n_rest=12, seed=0):
     tv = np.stack([qdot[s + 1:s + 1 + H] for s in starts])
     tp = np.stack([q[s + 1:s + 1 + H] for s in starts])
     roll_v = float(np.sqrt(((ov - tv) ** 2).mean(axis=1)).mean())
-    roll_p = float(np.abs(oq - tp)[:, -1].mean())
+    roll_path = float(np.abs(oq - tp).mean())
+    roll_final = float(np.abs(oq[:, -1] - tp[:, -1]).mean())
 
     qs = quiet_starts(u, history_len, n_rest, int(3.0 / R.dt) + 2)
     rest = float("nan")
@@ -218,17 +219,18 @@ def compute_metrics(R: "Rollout", q, qdot, u, n_track=24, n_rest=12, seed=0):
         steps = int(3.0 / R.dt)
         ov2, _ = R.free_run_batch(q, qdot, u, qs, np.zeros((len(qs), steps, 3), np.float32))
         rest = float(np.abs(ov2[:, int(2.0 / R.dt):]).mean())
-    return {"r2_1step": r2, "rollout_vel": roll_v, "rollout_pos": roll_p,
+    return {"r2_1step": r2, "rollout_vel": roll_v,
+            "rollout_pos": roll_path, "rollout_pos_final": roll_final,
             "rest": rest}
 
 
-def load_log_segments(csv: Path, dt: float):
+def load_log_segments(data_file: Path, dt: float):
     """Load a log as a list of (q, qdot, u) arrays, one per contiguous chunk."""
     spec = WindowSpec(dt=dt)
-    return [(c.q, c.qdot, c.u) for c in load_chunks(Path(csv), spec)]
+    return [(c.q, c.qdot, c.u) for c in load_chunks(Path(data_file), spec)]
 
 
-def load_pool_segments(csvs, dt: float):
+def load_pool_segments(data_files, dt: float):
     """Every contiguous chunk of every file, pooled into one list.
 
     Chunks carry their own length, and the summary below weights by duration,
@@ -237,21 +239,21 @@ def load_pool_segments(csvs, dt: float):
     """
     spec = WindowSpec(dt=dt)
     out = []
-    for path in csvs:
+    for path in data_files:
         out.extend((c.q, c.qdot, c.u) for c in load_chunks(Path(path), spec))
     return out
 
 
-def load_log(csv: Path, dt: float):
-    segments = load_log_segments(csv, dt)
+def load_log(data_file: Path, dt: float):
+    segments = load_log_segments(data_file, dt)
     if len(segments) != 1:
-        raise ValueError(f"{csv.name} contains {len(segments)} continuous chunks")
+        raise ValueError(f"{data_file.name} contains {len(segments)} continuous chunks")
     return segments[0]
 
 
 def main(
     model_dir: str,
-    csv: str,
+    data: str,
     horizons,
     n_track: int,
     n_rest: int,
@@ -262,11 +264,11 @@ def main(
     print(f"model : {model_dir}  weights={R.weights.name}  (dt={R.dt}s "
           f"hist_qdot={R.hq} hist_u={R.hu} target={R.target_mode})")
 
-    csv_files = resolve_csvs(csv)
-    if not csv_files:
-        raise FileNotFoundError(f"Could not resolve CSV input: {csv}")
-    logs = load_pool_segments(csv_files, R.dt)
-    label = csv_files[0].name if len(csv_files) == 1 else f"{len(csv_files)} files ({csv})"
+    data_files = resolve_data_files(data)
+    if not data_files:
+        raise FileNotFoundError(f"Could not resolve data input: {data}")
+    logs = load_pool_segments(data_files, R.dt)
+    label = data_files[0].name if len(data_files) == 1 else f"{len(data_files)} files ({data})"
     if len(logs) > 1:
         print(f"log   : {label}  {len(logs)} continuous chunks\n")
         rows = []
@@ -279,14 +281,15 @@ def main(
             rows.append((len(q), metrics))
             print(
                 f"chunk {i:02d}: rows={len(q):5d} R2={metrics['r2_1step']:.4f} "
-                f"vel={metrics['rollout_vel']:.4f} pos={metrics['rollout_pos']:.4f} "
+                f"vel={metrics['rollout_vel']:.4f} path={metrics['rollout_pos']:.4f} "
+                f"final={metrics['rollout_pos_final']:.4f} "
                 f"rest={metrics['rest']:.4f}"
             )
         if not rows:
             raise ValueError("No continuous chunk is long enough for evaluation")
 
         print("\nDuration-weighted summary:")
-        for key in ("r2_1step", "rollout_vel", "rollout_pos", "rest"):
+        for key in ("r2_1step", "rollout_vel", "rollout_pos", "rollout_pos_final", "rest"):
             values = np.array([metrics[key] for _, metrics in rows], dtype=np.float64)
             weights = np.array([length for length, _ in rows], dtype=np.float64)
             valid = np.isfinite(values)
@@ -320,10 +323,11 @@ def main(
 
     # ---------------- 2) free-running rollout ----------------
     print("\n=== 2) ROLLOUT (free-running, real commands) ===")
-    print("  vel RMSE [rad/s] and final position error [rad], mean over "
+    print("  velocity RMSE plus trajectory/final position MAE, mean over "
           f"{n_track} random starts")
     print(f"  {'horizon':>8s} | {'vel boom':>9s} {'arm':>7s} {'bucket':>7s} | "
-          f"{'pos boom':>9s} {'arm':>7s} {'bucket':>7s}")
+          f"{'path boom':>9s} {'arm':>7s} {'bucket':>7s} | "
+          f"{'final boom':>10s} {'arm':>7s} {'bucket':>7s}")
     rng = np.random.default_rng(seed)
     for hsec in horizons:
         H = int(hsec / R.dt)
@@ -331,14 +335,20 @@ def main(
         if T - H - 2 <= history_len + 1:
             continue
         starts = rng.integers(history_len + 1, T - H - 2, size=n_track)
-        ve, pe = [], []
+        ve, path_error, final_error = [], [], []
         for s0 in starts:
             ov, oq = R.free_run(q, qdot, u, int(s0), u[s0:s0 + H])
-            ve.append(np.sqrt(((ov - qdot[s0 + 1:s0 + 1 + H]) ** 2).mean(0)))
-            pe.append(np.abs(oq - q[s0 + 1:s0 + 1 + H])[-1])
-        ve = np.array(ve).mean(0); pe = np.array(pe).mean(0)
+            true_v = qdot[s0 + 1:s0 + 1 + H]
+            true_q = q[s0 + 1:s0 + 1 + H]
+            ve.append(np.sqrt(((ov - true_v) ** 2).mean(0)))
+            path_error.append(np.abs(oq - true_q).mean(0))
+            final_error.append(np.abs(oq[-1] - true_q[-1]))
+        ve = np.mean(ve, axis=0)
+        path_error = np.mean(path_error, axis=0)
+        final_error = np.mean(final_error, axis=0)
         print(f"  {hsec:6.1f}s | {ve[0]:9.3f} {ve[1]:7.3f} {ve[2]:7.3f} | "
-              f"{pe[0]:9.3f} {pe[1]:7.3f} {pe[2]:7.3f}")
+              f"{path_error[0]:9.3f} {path_error[1]:7.3f} {path_error[2]:7.3f} | "
+              f"{final_error[0]:10.3f} {final_error[1]:7.3f} {final_error[2]:7.3f}")
 
     # ---------------- 3) rest stability ----------------
     print("\n=== 3) REST (hold u=0 from real quiet points, self-fed) ===")
@@ -400,8 +410,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="model", help="Trained model directory")
     p.add_argument(
-        "--csv", required=True,
-        help="Held-out log(s): a file, a directory, or a glob. Multiple files are "
+        "--data", "--csv", dest="data", required=True,
+        help="Held-out Parquet or legacy CSV log(s): a file, a directory, or a glob. Multiple files are "
              "pooled and summarized duration-weighted.",
     )
     p.add_argument("--horizons", default="0.5,1,2,5,10", help="Rollout horizons in seconds")
@@ -410,5 +420,5 @@ if __name__ == "__main__":
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--weights", default=None, help="Optional checkpoint state dict")
     a = p.parse_args()
-    main(a.model, a.csv, [float(x) for x in a.horizons.split(",")],
+    main(a.model, a.data, [float(x) for x in a.horizons.split(",")],
          a.n_track, a.n_rest, a.seed, a.weights)

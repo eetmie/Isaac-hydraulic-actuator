@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import weakref
 
 sys.path.insert(0, os.path.dirname(__file__))
 from sim_common import (  # noqa: E402
@@ -85,9 +84,6 @@ import numpy as np
 import torch
 from pxr import UsdPhysics
 
-import carb
-import carb.input
-import omni.appwindow
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, Articulation
@@ -96,17 +92,17 @@ from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.utils import configclass
 
 from actuators import (  # noqa: E402
+    DirectIntegrationActuator,
     HydraulicActuatorNet,
     VelocityIntegratedActuator,
-    DirectIntegrationActuator,
 )
+from demo_input import XboxController  # noqa: E402
 
 # ── constants ──────────────────────────────────────────────────────────────
 
 MODEL_DIR        = args_cli.model
 ROBOT_USD        = os.path.join(os.path.dirname(__file__), "assets", "excavator.usd")
 CONTROL_DECIMATION = 1       # physics and NN run at the same rate
-DEAD_ZONE        = 0.30
 CARRIAGE_VEL_MAX = 0.8   # rad/s
 ARM_VEL_MAX      = 0.5   # rad/s — direct mode arm velocity scale
 NN_ARM_VEL_MAX   = args_cli.vel_limit
@@ -121,10 +117,6 @@ class ExcavatorSceneCfg(InteractiveSceneCfg):
         prim_path="/World/Light",
         spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75)),
     )
-    #ground = AssetBaseCfg(
-    #    prim_path="/World/defaultGroundPlane",
-    #    spawn=sim_utils.GroundPlaneCfg(),
-    #)
     robot = ArticulationCfg(
         prim_path="{ENV_REGEX_NS}/Robot",
         spawn=sim_utils.UsdFileCfg(
@@ -164,91 +156,6 @@ class ExcavatorSceneCfg(InteractiveSceneCfg):
             ),
         },
     )
-
-
-# ── gamepad ────────────────────────────────────────────────────────────────
-
-def _deadzone(v: float) -> float:
-    if abs(v) < DEAD_ZONE:
-        return 0.0
-    s = 1.0 if v > 0.0 else -1.0
-    return s * (abs(v) - DEAD_ZONE) / (1.0 - DEAD_ZONE)
-
-
-class XboxController:
-    """Minimal gamepad reader for direct valve-command teleop."""
-
-    def __init__(self):
-        carb.settings.get_settings().set_bool(
-            "/persistent/app/omniverse/gamepadCameraControl", False
-        )
-        self._appwindow  = omni.appwindow.get_default_app_window()
-        self._input      = carb.input.acquire_input_interface()
-        self._gamepad    = self._appwindow.get_gamepad(0)
-        # index: 0=lift_up 1=lift_dn 2=carriage_l 3=carriage_r 4=tilt_up 5=tilt_dn 6=tool_r 7=tool_l
-        self._axes = np.zeros(8, dtype=np.float32)
-        self._a_pressed  = False
-        self._prev_a     = False
-        self._b_pressed  = False
-        self._prev_b     = False
-
-        self._sub = self._input.subscribe_to_gamepad_events(
-            self._gamepad,
-            lambda ev, *a, obj=weakref.proxy(self): obj._on_event(ev),
-        )
-        name = self._input.get_gamepad_name(self._gamepad)
-        print(f"[Gamepad] {'Connected: ' + name if name else 'No gamepad detected'}")
-
-    def __del__(self):
-        if hasattr(self, "_input") and hasattr(self, "_sub"):
-            self._input.unsubscribe_to_gamepad_events(self._gamepad, self._sub)
-
-    def _on_event(self, ev):
-        GI = carb.input.GamepadInput
-        v  = ev.value
-        m  = {
-            GI.LEFT_STICK_UP:    (0, v),
-            GI.LEFT_STICK_DOWN:  (1, v),
-            GI.LEFT_STICK_LEFT:  (2, v),
-            GI.LEFT_STICK_RIGHT: (3, v),
-            GI.RIGHT_STICK_UP:   (4, v),
-            GI.RIGHT_STICK_DOWN: (5, v),
-            GI.RIGHT_STICK_RIGHT:(6, v),
-            GI.RIGHT_STICK_LEFT: (7, v),
-        }
-        if ev.input in m:
-            idx, val = m[ev.input]
-            self._axes[idx] = val
-        elif ev.input == GI.A:
-            self._a_pressed = v > 0.5
-        elif ev.input == GI.B:
-            self._b_pressed = v > 0.5
-        return True
-
-    @staticmethod
-    def _axis(pos: float, neg: float) -> float:
-        raw = float(pos) - float(neg)
-        return _deadzone(raw)
-
-    def read(self) -> tuple[float, float, float, float]:
-        """Returns (lift_cmd, carriage_vel_norm, tilt_cmd, tool_cmd) each in [-1, 1]."""
-        tilt     = -self._axis(self._axes[0], self._axes[1])  # left  Y
-        carriage = -self._axis(self._axes[3], self._axes[2])  # left  X
-        lift     =  self._axis(self._axes[4], self._axes[5])  # right Y
-        tool     = -self._axis(self._axes[6], self._axes[7])  # right X
-        return lift, carriage, tilt, tool
-
-    def mode_toggle_requested(self) -> bool:
-        cur    = self._a_pressed
-        rising = cur and not self._prev_a
-        self._prev_a = cur
-        return rising
-
-    def reset_requested(self) -> bool:
-        cur    = self._b_pressed
-        rising = cur and not self._prev_b
-        self._prev_b = cur
-        return rising
 
 
 # ── main ───────────────────────────────────────────────────────────────────
@@ -433,6 +340,7 @@ def main():
                   f"lift={p[0]:.3f}  tilt={p[1]:.3f}  tool={p[2]:.3f}  rad")
         step += 1
 
+    teleop.close()
     simulation_app.close()
 
 

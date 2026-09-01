@@ -70,16 +70,14 @@ def session_ids(
 ) -> List[str]:
     """Group chunks into driving sessions. Returns one label per chunk.
 
-    The logger rolls to a new file every ~600 s under a fresh wall-clock name,
-    so one continuous drive arrives as several "recordings". Grouping on the
-    filename alone would scatter one drive across both sides of a split built
-    to prevent exactly that.
+    Legacy prepared datasets can contain consecutive files from one drive under
+    fresh wall-clock names. Grouping on the filename alone would scatter one
+    drive across both sides of a split built to prevent exactly that.
 
     Two recordings join the same session when the later one starts no more than
     ``max_gap_sec`` after the earlier one ended -- overlapping spans included,
-    since a rollover can re-stamp slightly before the previous file's last
-    sample. Distinct drives here are minutes to hours apart, so the threshold
-    is not delicate.
+    since capture/preparation boundaries can overlap slightly. Distinct drives
+    here are minutes to hours apart, so the threshold is not delicate.
 
     ``t_ends`` is each chunk's last timestamp *relative to the start of its
     source recording*, i.e. how long that recording ran. Chunks of one recording

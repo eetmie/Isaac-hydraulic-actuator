@@ -59,7 +59,7 @@ def make_starts(
 
 
 class RolloutScorer:
-    """Scores a model by final position error over free-running rollouts.
+    """Scores a model by position error across free-running trajectories.
 
     Everything the rollout needs is uploaded once at construction, so scoring is
     a pure forward pass with no host traffic.
@@ -99,14 +99,14 @@ class RolloutScorer:
         self.q0 = tens(q[starts])
         # Real commands drive the rollout; only the state is fed back.
         self.u_seq = tens(np.stack([u[s:s + horizon] for s in starts], axis=0))
-        self.q_true = tens(q[starts + horizon])
+        self.q_true = tens(np.stack([q[s + 1:s + horizon + 1] for s in starts], axis=0))
 
         self.x_mean, self.x_std = tens(x_mean), tens(x_std)
         self.y_mean, self.y_std = tens(y_mean), tens(y_std)
 
     @torch.no_grad()
     def score(self, model: torch.nn.Module) -> float:
-        """Mean absolute position error [rad] at the rollout horizon."""
+        """Mean absolute position error [rad] over every rollout step and joint."""
         spec = self.spec
         was_training = model.training
         model.eval()
@@ -116,6 +116,7 @@ class RolloutScorer:
         ubuf = self.ubuf0.clone()
         qc = self.q0.clone()
         B = qc.shape[0]
+        total_abs_error = torch.zeros((), device=self.device)
 
         for s in range(self.horizon):
             ubuf = torch.roll(ubuf, 1, dims=1)
@@ -130,6 +131,7 @@ class RolloutScorer:
             delta = model((x - self.x_mean) / self.x_std) * self.y_std + self.y_mean
             qdot_next = vbuf[:, 0] + delta          # newest velocity tap is qdot(t)
             qc = qc + spec.dt * qdot_next
+            total_abs_error += (qc - self.q_true[:, s]).abs().sum()
 
             qbuf = torch.roll(qbuf, 1, dims=1)
             qbuf[:, 0] = qc
@@ -139,4 +141,4 @@ class RolloutScorer:
 
         if was_training:
             model.train()
-        return float((qc - self.q_true).abs().mean().item())
+        return float((total_abs_error / (B * self.horizon * qc.shape[1])).item())

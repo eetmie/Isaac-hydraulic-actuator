@@ -12,7 +12,7 @@ final-epoch weights are kept alongside as ``mlp_state_dict_final.pt``.
 Train/validation is split either over whole driving sessions or over contiguous
 snippets -- ``--split``, see splits.py.
 
-Cleaning is not part of this file; feed it CSVs that already have the required
+Cleaning is not part of this file; feed it Parquet logs or legacy CSVs that already have the required
 columns. RPM and oil temperature are not inputs.
 """
 
@@ -37,7 +37,7 @@ from dataset import (
     Normalizer,
     WindowSpec,
     build_pool,
-    resolve_csvs,
+    resolve_data_files,
 )
 from rollout import RolloutScorer, make_starts
 from splits import (
@@ -92,7 +92,7 @@ def train(
     """Minibatch training with best-checkpoint tracking.
 
     ``select_on`` picks the selection metric: ``"rollout"`` (free-running
-    position error, the thing the model is actually judged by) or ``"val"``
+    trajectory position MAE, the thing the model is actually judged by) or ``"val"``
     (one-step MSE). Rollout scoring runs every ``rollout_every`` epochs, and
     only those epochs are selection candidates.
 
@@ -168,7 +168,7 @@ def train(
                 }
             )
             marker = " *best" if is_best else ""
-            roll_text = "" if np.isnan(roll) else f" | roll {roll:.4f}rad"
+            roll_text = "" if np.isnan(roll) else f" | roll-path-mae {roll:.4f}rad"
             print(
                 f"epoch {ep:05d} | train {tr_loss:.6f} | val {va_loss:.6f}"
                 f"{roll_text} | {history[-1]['elapsed_min']:.1f} min{marker}"
@@ -178,11 +178,19 @@ def train(
 
     if best_state is None:
         raise RuntimeError("Training stopped before a single scored epoch completed")
+    if scorer is not None and not np.isfinite(best_metrics["rollout"]):
+        # With one-step selection the best epoch may fall between scheduled
+        # rollout evaluations. Score its saved weights once so metadata stays useful.
+        final_state = {key: value.detach().clone() for key, value in model.state_dict().items()}
+        model.load_state_dict(best_state)
+        best_metrics["rollout"] = scorer.score(model)
+        model.load_state_dict(final_state)
+
     return best_state, best_epoch, best_metrics, history
 
 
 def main(
-    csv_path: str,
+    data_path: str,
     out_dir: Optional[str] = None,
     *,
     epochs: int = 1800,
@@ -216,18 +224,18 @@ def main(
                 "no checkpoint will be written. Note it now counts EPOCHS, not steps."
             )
 
-    csv_files = resolve_csvs(csv_path)
-    if not csv_files:
-        raise FileNotFoundError(f"Could not resolve CSV input: {csv_path}")
+    data_files = resolve_data_files(data_path)
+    if not data_files:
+        raise FileNotFoundError(f"Could not resolve data input: {data_path}")
 
     spec = WindowSpec.from_seconds(
         velocity_history_sec, command_history_sec, command_stride_sec
     )
 
-    pool = build_pool(csv_files, spec, "pool")
+    pool = build_pool(data_files, spec, "pool")
     if split == "session":
-        # Group by driving session, not by filename: the logger rolls files mid-drive
-        # under a fresh timestamp, so filename grouping would straddle the split.
+        # Group by driving session, not only by filename: a drive may span files
+        # with fresh timestamps, so filename grouping could straddle the split.
         chunk_sessions = session_ids(pool.names, pool.t_ends)
         train_idx, val_idx, val_ranges, split_info = train_val_indices(
             pool.counts,
@@ -238,9 +246,9 @@ def main(
         )
         session_of = dict(zip((recording_id(n) for n in pool.names), chunk_sessions))
         val_sessions = set(split_info["validation_sessions"])
-        in_val = [session_of.get(recording_id(f.stem)) in val_sessions for f in csv_files]
-        split_info["train_files"] = [f.name for f, v in zip(csv_files, in_val) if not v]
-        split_info["validation_files"] = [f.name for f, v in zip(csv_files, in_val) if v]
+        in_val = [session_of.get(recording_id(f.stem)) in val_sessions for f in data_files]
+        split_info["train_files"] = [f.name for f, v in zip(data_files, in_val) if not v]
+        split_info["validation_files"] = [f.name for f, v in zip(data_files, in_val) if v]
     else:
         # Snippet split: every session contributes to training, at the cost of a
         # validation set that is not independent at the session level.
@@ -352,7 +360,7 @@ def main(
     torch.save(best_state, out / "mlp_state_dict.pt")
     print(
         f"\nShipping best-on-{select_on} weights from epoch {best_epoch} "
-        f"(val {best_metrics['val']:.6f}, rollout {best_metrics['rollout']:.4f} rad); "
+        f"(val {best_metrics['val']:.6f}, rollout path MAE {best_metrics['rollout']:.4f} rad); "
         "final-epoch weights kept as mlp_state_dict_final.pt"
     )
 
@@ -375,12 +383,13 @@ def main(
         "rollout_every": int(rollout_every),
         "rollout_horizon_sec": float(rollout_horizon_sec),
         "rollout_starts": int(len(starts)),
+        "rollout_metric": "trajectory_position_mae_rad",
         "best_epoch": int(best_epoch),
         "best_val_loss": float(best_metrics["val"]),
         "best_rollout_error_rad": float(best_metrics["rollout"]),
         "final_val_loss": float(hist_df["val"].iloc[-1]),
         "shipped_weights": f"best_on_{select_on}",
-        "pool_files": [f.name for f in csv_files],
+        "pool_files": [f.name for f in data_files],
         **split_info,
     }
     with open(out / "model_meta.json", "w", encoding="utf-8") as f:
@@ -412,8 +421,8 @@ if __name__ == "__main__":
 
     io = p.add_argument_group("data and output")
     io.add_argument(
-        "--csv", required=True,
-        help="Training CSV file, directory, or glob. Relative paths are tried "
+        "--data", "--csv", dest="data", required=True,
+        help="Training Parquet or legacy CSV file, directory, or glob. Relative paths are tried "
              "against the working directory, then against this script's directory.",
     )
     io.add_argument(
@@ -477,7 +486,7 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     main(
-        args.csv,
+        args.data,
         args.out,
         epochs=args.epochs,
         batch_size=args.batch_size,

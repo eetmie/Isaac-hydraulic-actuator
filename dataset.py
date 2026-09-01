@@ -17,9 +17,9 @@ Keeping it separate is what gives ``test_contract.py`` something real to check;
 if it imported ``build_features`` the parity test would only prove that numpy
 equals numpy.
 
-Cleaning is not here -- bring your own. This module consumes CSVs that already
-have the required columns, and splits the timeline wherever they are unusable
-rather than dropping rows in place.
+Cleaning is not here -- bring your own. This module consumes Parquet logs or
+legacy CSVs with the required columns, and splits the timeline wherever they
+are unusable rather than dropping rows in place.
 """
 
 from __future__ import annotations
@@ -37,13 +37,15 @@ import torch.nn as nn
 
 
 # ----------------------------------------------------------------------------
-# Column contract (matches data_collection/drive_logger.py output)
+# Column contract (matches kaivuriprokkis/simple_drive.py Parquet output)
 # ----------------------------------------------------------------------------
 
 TIME_COL = "timestamp"
 U_COLS = ["combined_cmd_lift", "combined_cmd_tilt", "combined_cmd_scoop"]
 Q_COLS = ["joint_pos_boom", "joint_pos_arm", "joint_pos_bucket"]
 QDOT_COLS = ["joint_vel_boom", "joint_vel_arm", "joint_vel_bucket"]
+DATA_SUFFIXES = {".parquet", ".pq", ".csv"}
+LOAD_COLS = [TIME_COL, *Q_COLS, *QDOT_COLS, *U_COLS, "sample_idx", "cmd_stale"]
 
 N_JOINTS = 3
 
@@ -288,7 +290,7 @@ class MLP(nn.Module):
 
 
 # ----------------------------------------------------------------------------
-# Loading clean CSVs
+# Loading clean drive logs
 # ----------------------------------------------------------------------------
 
 @dataclass
@@ -308,28 +310,49 @@ class Chunk:
         return len(self.q)
 
 
-def resolve_csvs(value: str) -> List[Path]:
-    """Accept a file, a directory, a glob, or any of those relative to this script.
+def _is_drive_log(path: Path) -> bool:
+    return (
+        path.suffix.lower() in DATA_SUFFIXES
+        and not path.name.startswith("imu_raw_")
+    )
 
-    The script-relative fallback matters because these tools are normally run
-    through Isaac Lab's launcher from the repository root, not from this
-    directory. Every form -- including globs -- is tried against the working
-    directory first and this script's directory second, so ``--csv my_logs`` and
-    ``--csv "my_logs/*.csv"`` both work from either place.
-    """
+
+def resolve_data_files(value: str) -> List[Path]:
+    """Accept a Parquet/CSV file, directory, or glob from cwd or this repo."""
     here = Path(__file__).resolve().parent
     for base in (Path(value), here / value):
-        if base.is_file():
+        if base.is_file() and base.suffix.lower() in DATA_SUFFIXES:
             return [base]
         if base.is_dir():
-            return sorted(base.glob("*.csv"))
-    # glob.glob, not Path.glob: the latter raises on an absolute pattern, which is
-    # exactly what you get from a launcher script that expands paths for you.
+            return sorted(
+                path for path in base.iterdir()
+                if path.is_file() and _is_drive_log(path)
+            )
+
     for pattern in (value, str(here / value)):
-        matches = sorted(Path(p) for p in glob.glob(pattern) if os.path.isfile(p))
+        matches = sorted(
+            Path(path) for path in glob.glob(pattern)
+            if os.path.isfile(path) and _is_drive_log(Path(path))
+        )
         if matches:
             return matches
     return []
+
+
+def resolve_csvs(value: str) -> List[Path]:
+    """Backward-compatible alias for callers using the old CSV-specific name."""
+    return resolve_data_files(value)
+
+
+def read_log(path: Path) -> pd.DataFrame:
+    """Read only model inputs plus optional legacy continuity columns."""
+    if path.suffix.lower() in {".parquet", ".pq"}:
+        import pyarrow.parquet as pq
+
+        available = set(pq.read_schema(path).names)
+        columns = [column for column in LOAD_COLS if column in available]
+        return pd.read_parquet(path, columns=columns)
+    return pd.read_csv(path, usecols=lambda column: column in LOAD_COLS)
 
 
 def resample_to_fixed_dt(df: pd.DataFrame, dt: float, time_col: str) -> pd.DataFrame:
@@ -409,14 +432,14 @@ def _runs_of_true(mask: np.ndarray) -> List[Tuple[int, int]]:
 
 
 def load_chunks(path: Path, spec: WindowSpec) -> List[Chunk]:
-    """Load one clean CSV into contiguous chunks ready for windowing.
+    """Load one clean drive log into contiguous chunks ready for windowing.
 
     Unusable rows (non-finite values, or a stale command) SPLIT the timeline
     rather than being filtered out of it. Dropping them in place -- as the
     pre-refactor code did -- would let a history window span the resulting hole
     as though it were contiguous.
     """
-    df = pd.read_csv(path)
+    df = read_log(path)
     required = [TIME_COL] + Q_COLS + QDOT_COLS + U_COLS
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -461,7 +484,7 @@ def load_chunks(path: Path, spec: WindowSpec) -> List[Chunk]:
 
 @dataclass
 class Pool:
-    """All windows from a set of CSVs, concatenated in file/chunk order.
+    """All windows from a set of drive logs, concatenated in file/chunk order.
 
     ``q``/``qdot``/``u`` are the raw physical state at each window's own
     timestamp, kept unnormalized and aligned row-for-row with ``X``. Free-running
@@ -484,7 +507,7 @@ class Pool:
 
 
 def build_pool(paths: List[Path], spec: WindowSpec, label: str = "", verbose: bool = True) -> Pool:
-    """Window every chunk of every CSV into one flat array.
+    """Window every chunk of every drive log into one flat array.
 
     ``counts`` and ``names`` are the interface to splits.py: they locate every
     chunk in the flat arrays and identify its source recording.

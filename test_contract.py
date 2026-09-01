@@ -21,12 +21,14 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dataset import WindowSpec, build_features
+from dataset import WindowSpec, build_features, load_chunks, resolve_data_files
 from splits import (
     recording_id,
     session_ids,
@@ -137,9 +139,9 @@ def test_snippet_split_no_leakage() -> None:
 
 
 def test_session_grouping() -> None:
-    """Consecutive logger files from one drive must land in the same session.
+    """Consecutive legacy files from one drive must land in the same session.
 
-    The logger rolls to a new file every ~600 s under a fresh wall-clock name,
+    Prepared datasets can split a drive around 600 s under a fresh wall-clock name,
     so 185559_seg000 (600.00 s) and 190558_seg001 are one continuous 20-minute
     drive. Grouping on the filename would split them across train/val and leak
     ten minutes of the same drive through a split built to prevent exactly that.
@@ -234,7 +236,8 @@ def test_rollout_matches_eval(model_dir: str, tol: float = 1e-4) -> float:
     starts = starts[starts + horizon < len(q) - 1]
 
     _, oq = R.free_run_batch(q, qdot, u, starts, np.stack([u[s:s + horizon] for s in starts]))
-    numpy_error = float(np.abs(oq[:, -1] - q[starts + horizon]).mean())
+    q_true = np.stack([q[s + 1:s + horizon + 1] for s in starts])
+    numpy_error = float(np.abs(oq - q_true).mean())
 
     scorer = RolloutScorer(
         spec, q, qdot, u, starts, horizon,
@@ -250,6 +253,36 @@ def test_rollout_matches_eval(model_dir: str, tol: float = 1e-4) -> float:
     return diff
 
 
+def test_parquet_log_roundtrip() -> None:
+    """The current logger schema resolves and loads without legacy quality flags."""
+    spec = WindowSpec()
+    rows = spec.history_samples + 25
+    t = np.arange(rows, dtype=np.float64) * spec.dt
+    frame = pd.DataFrame({
+        "timestamp": t,
+        "joint_pos_boom": 0.1 * t,
+        "joint_pos_arm": 0.2 * t,
+        "joint_pos_bucket": -0.1 * t,
+        "joint_vel_boom": np.full(rows, 0.1),
+        "joint_vel_arm": np.full(rows, 0.2),
+        "joint_vel_bucket": np.full(rows, -0.1),
+        "combined_cmd_lift": np.zeros(rows),
+        "combined_cmd_tilt": np.zeros(rows),
+        "combined_cmd_scoop": np.zeros(rows),
+    })
+
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "drive_log_20260902_120000.parquet"
+        frame.to_parquet(path, index=False)
+        frame.to_parquet(Path(tmp) / "imu_raw_20260902_120000.parquet", index=False)
+        assert resolve_data_files(tmp) == [path]
+        chunks = load_chunks(path, spec)
+
+    assert len(chunks) == 1
+    assert len(chunks[0]) == rows
+    assert np.allclose(chunks[0].q[:, 0], frame["joint_pos_boom"])
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--model", default=None, help="Model dir to run the parity test against")
@@ -258,7 +291,8 @@ def main() -> int:
 
     failures = 0
     for fn in (test_meta_roundtrip, test_split_no_leakage,
-               test_snippet_split_no_leakage, test_session_grouping):
+               test_snippet_split_no_leakage, test_session_grouping,
+               test_parquet_log_roundtrip):
         try:
             fn()
             print(f"PASS  {fn.__name__}")

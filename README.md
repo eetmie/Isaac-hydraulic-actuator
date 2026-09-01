@@ -65,12 +65,17 @@ second dynamic system the real machine does not have, with its own lag.
 
 ## Training on your own machine
 It's pretty easy to convert this to accept basically any kind of dataset, I had multiple 10min runs available.
+The training environment needs `pandas` and `pyarrow` in addition to NumPy and PyTorch.
 
 ```bash
-python train.py --csv /path/to/your/logs --out runs/my_run --device cuda
+python -m pip install pandas pyarrow
 ```
 
-CSV columns, one row per 100 Hz sample:
+```bash
+python train.py --data /path/to/your/logs --out runs/my_run --device cuda
+```
+
+Parquet columns, one row per 100 Hz sample:
 
 | column | unit |
 |---|---|
@@ -79,8 +84,8 @@ CSV columns, one row per 100 Hz sample:
 | `joint_vel_boom`, `joint_vel_arm`, `joint_vel_bucket` | rad/s |
 | `combined_cmd_lift`, `combined_cmd_tilt`, `combined_cmd_scoop` | normalized [-1, 1] |
 
-Optional `sample_idx` and `cmd_stale` columns are used to split the timeline
-where the log is discontinuous or the command was not fresh.
+Timestamp discontinuities and non-finite sensor rows split trajectories automatically.
+Legacy CSV input remains supported through the `--csv` alias.
 
 Rename columns to match your data or edit the constants
 at the top of [`dataset.py`](dataset.py).
@@ -95,16 +100,16 @@ free-running position error than the one rollout selection picked.
 
 So every `--rollout-every` epochs, [`rollout.py`](rollout.py) free-runs
 trajectories inside the held-out recordings and scores mean absolute position
-error. `mlp_state_dict.pt` is the best of those, not the last epoch; final
-weights are kept alongside as `mlp_state_dict_final.pt`. `--select-on val`
+error across the full trajectory. `mlp_state_dict.pt` is the best of those, not
+the last epoch; final weights are kept as `mlp_state_dict_final.pt`. `--select-on val`
 restores one-step selection, mainly so you can reproduce that comparison
 yourself.
 
 ### Splitting
 
-`--split session` holds out whole driving sessions. Recordings are grouped by wall-clock continuity, not filename, because
-loggers roll to a new file mid-drive and filename grouping would put ten minutes
-of the same drive on both sides of the split.
+`--split session` holds out whole driving sessions. Recordings are grouped by
+wall-clock continuity rather than filename because one drive may span consecutive
+files; filename grouping could place parts of the same drive on both sides.
 
 `--split snippet` holds out contiguous snippets from every drive instead, with a
 leakage buffer. Every session then contributes to training, which measured
@@ -117,11 +122,12 @@ re-split the data and refit the normalizers.
 ## Evaluating
 
 ```bash
-python eval.py --model runs/my_run --csv "held_out/*.csv"
+python eval.py --model runs/my_run --data "held_out/*.parquet"
 ```
-Reports one-step R2, free-running velocity and position error at several
-horizons, and drift at rest. Multiple files are pooled and summarized
-duration-weighted. Use free-running position error as the primary number.
+Reports one-step R2, free-running velocity, trajectory/final position error at
+several horizons, and drift at rest. Multiple files are pooled and summarized
+duration-weighted. Use trajectory position MAE as the primary number; endpoint
+error and rest drift catch complementary failures.
 
 ## Testing
 
@@ -157,8 +163,9 @@ Honest about what this costs today:
 ## The included model
 
 Trained on ~90 minutes of logged excavator driving. Default configuration, best
-checkpoint at epoch 1470 of 1800, selected on a 5 s free-running rollout error of
-0.032 rad over held-out sessions.
+checkpoint at epoch 1470 of 1800. Its metadata reports the previous endpoint-only
+5 s rollout error of 0.032 rad over held-out sessions; retraining uses the stronger
+full-trajectory MAE described above.
 
 | | |
 |---|---|
