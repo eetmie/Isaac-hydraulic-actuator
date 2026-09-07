@@ -1,9 +1,15 @@
-"""Train the three-joint supervised hydraulic actuator model.
+"""Train a supervised hydraulic actuator forward model.
 
-One 3x128 ReLU MLP models all three hydraulic joints. The input is the current
-position, a dense velocity history and a sparse command history; the target is
-``delta_qdot = qdot(t + dt) - qdot(t)``, and the next absolute velocity is
-reconstructed as ``qdot(t) + delta_qdot``.
+One MLP models every joint it is given, so it can learn their coupling. The
+input is the current position, a dense velocity history and a sparse command
+history; the target is ``delta_qdot = qdot(t + dt) - qdot(t)``, and the next
+absolute velocity is reconstructed as ``qdot(t) + delta_qdot``.
+
+Nothing here is fixed to one machine. ``--q-cols`` / ``--qdot-cols`` / ``--u-cols``
+set the input and output widths, ``--hidden`` and ``--activation`` set the
+architecture, and the ``*-history-sec`` flags set the window. The defaults
+reproduce the shipped three-joint excavator arm model exactly, and a one-joint
+slew model is the same command with single-entry column lists.
 
 ``mlp_state_dict.pt`` is the checkpoint with the best held-out *rollout* position
 error, not the last epoch and not the best one-step loss -- see rollout.py. The
@@ -12,15 +18,21 @@ final-epoch weights are kept alongside as ``mlp_state_dict_final.pt``.
 Train/validation is split either over whole driving sessions or over contiguous
 snippets -- ``--split``, see splits.py.
 
-Cleaning is not part of this file; feed it CSVs that already have the required
-columns. RPM and oil temperature are not inputs.
+Two input sources, one pipeline. ``--csv`` reads the flat column layout below;
+``--lerobot`` reads a LeRobot v3.0 dataset root and resolves the same channel
+names against the vectors in its ``meta/info.json``. Both produce the same
+chunks, so everything after loading is identical.
+
+Cleaning is not part of this file; feed it data that already has the required
+columns, velocity included -- neither loader differentiates position for you.
+RPM and oil temperature are not inputs.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 import json
 import time
 
@@ -30,15 +42,21 @@ import torch
 import torch.nn as nn
 
 from dataset import (
-    HIDDEN,
-    ACTIVATION,
-    TARGET_MODE,
+    ACTIVATIONS,
     MLP,
+    QDOT_COLS,
+    Q_COLS,
+    TARGET_MODE,
+    TIME_COL,
+    U_COLS,
+    ModelSpec,
     Normalizer,
     WindowSpec,
     build_pool,
     resolve_csvs,
+    resolve_dataset_dir,
 )
+import lerobot_source
 from rollout import RolloutScorer, make_starts
 from splits import (
     recording_id,
@@ -52,11 +70,11 @@ def resolve_out_dir(out_dir: Optional[str]) -> Path:
     """Where a run writes its artifacts.
 
     A relative ``--out`` is resolved against this script, not the working
-    directory, so runs land beside the code whether they were launched from
-    here or from the repository root through Isaac Lab's launcher.
+    directory, so runs land under ``training/`` whether they were launched from
+    here or from the repository root.
 
-    The default is a fresh timestamped run directory. It is deliberately NOT
-    the deployed ``model/`` directory: that made a bare ``python train.py``
+    The default is a fresh timestamped run directory. It is deliberately NOT a
+    deployed ``models/*`` directory: that made a bare ``python train.py``
     overwrite the shipped artifact in place, with no way back.
     """
     if out_dir is None:
@@ -182,7 +200,7 @@ def train(
 
 
 def main(
-    csv_path: str,
+    csv_path: Optional[str],
     out_dir: Optional[str] = None,
     *,
     epochs: int = 1800,
@@ -199,9 +217,19 @@ def main(
     rollout_every: int = 5,
     rollout_horizon_sec: float = 5.0,
     rollout_starts: int = 256,
+    lerobot_path: Optional[str] = None,
+    dt: Optional[float] = None,
+    position_history_sec: float = 0.0,
     velocity_history_sec: float = 0.10,
+    velocity_stride_sec: float = 0.01,
     command_history_sec: float = 0.99,
     command_stride_sec: float = 0.03,
+    q_cols: Sequence[str] = Q_COLS,
+    qdot_cols: Sequence[str] = QDOT_COLS,
+    u_cols: Sequence[str] = U_COLS,
+    time_col: str = TIME_COL,
+    hidden: Sequence[int] = (128, 128, 128),
+    activation: str = "relu",
     device: str = "auto",
 ):
     out = resolve_out_dir(out_dir)
@@ -216,15 +244,42 @@ def main(
                 "no checkpoint will be written. Note it now counts EPOCHS, not steps."
             )
 
-    csv_files = resolve_csvs(csv_path)
-    if not csv_files:
-        raise FileNotFoundError(f"Could not resolve CSV input: {csv_path}")
+    # One source or the other. The loader is the only thing that differs; every
+    # stage after build_pool sees the same Chunk list either way.
+    if (csv_path is None) == (lerobot_path is None):
+        raise ValueError("Pass exactly one of --csv or --lerobot")
+
+    if lerobot_path is not None:
+        root = resolve_dataset_dir(lerobot_path)
+        info = lerobot_source.load_info(root)
+        dataset_period = lerobot_source.dataset_dt(info)
+        if dt is None:
+            dt = dataset_period
+            print(f"Using dt={dt:g}s from the dataset's {info['fps']} fps")
+        source_files = [root]
+        loader = lerobot_source.load_lerobot_chunks
+    else:
+        dt = 0.01 if dt is None else dt
+        source_files = resolve_csvs(csv_path)
+        if not source_files:
+            raise FileNotFoundError(f"Could not resolve CSV input: {csv_path}")
+        loader = None
 
     spec = WindowSpec.from_seconds(
-        velocity_history_sec, command_history_sec, command_stride_sec
+        velocity_history_sec,
+        command_history_sec,
+        command_stride_sec,
+        dt=dt,
+        position_history_sec=position_history_sec,
+        velocity_stride_sec=velocity_stride_sec,
+        q_cols=q_cols,
+        qdot_cols=qdot_cols,
+        u_cols=u_cols,
+        time_col=time_col,
     )
+    arch = ModelSpec(hidden=tuple(hidden), activation=activation)
 
-    pool = build_pool(csv_files, spec, "pool")
+    pool = build_pool(source_files, spec, "pool", loader=loader)
     if split == "session":
         # Group by driving session, not by filename: the logger rolls files mid-drive
         # under a fresh timestamp, so filename grouping would straddle the split.
@@ -238,9 +293,11 @@ def main(
         )
         session_of = dict(zip((recording_id(n) for n in pool.names), chunk_sessions))
         val_sessions = set(split_info["validation_sessions"])
-        in_val = [session_of.get(recording_id(f.stem)) in val_sessions for f in csv_files]
-        split_info["train_files"] = [f.name for f, v in zip(csv_files, in_val) if not v]
-        split_info["validation_files"] = [f.name for f, v in zip(csv_files, in_val) if v]
+        # LeRobot episodes carry no wall clock, so each is already its own
+        # session and there is no file-level grouping to report.
+        in_val = [session_of.get(recording_id(f.stem)) in val_sessions for f in source_files]
+        split_info["train_files"] = [f.name for f, v in zip(source_files, in_val) if not v]
+        split_info["validation_files"] = [f.name for f, v in zip(source_files, in_val) if v]
     else:
         # Snippet split: every session contributes to training, at the cost of a
         # validation set that is not independent at the session level.
@@ -305,7 +362,12 @@ def main(
     if split == "session":
         print(f"Validation sessions: {', '.join(split_info['validation_sessions'])}")
     print(
-        f"Model: hidden={HIDDEN}, activation={ACTIVATION}, target={TARGET_MODE}, "
+        f"Channels: {spec.n_q} joints {list(spec.qdot_cols)}, "
+        f"{spec.n_u} commands {list(spec.u_cols)}"
+    )
+    print(
+        f"Model: hidden={list(arch.hidden)}, activation={arch.activation}, "
+        f"in_dim={spec.in_dim}, out_dim={spec.out_dim}, target={TARGET_MODE}, "
         f"lr={lr}, weight_decay={weight_decay}"
     )
     print(
@@ -332,7 +394,7 @@ def main(
         xnorm.mean, xnorm.std, ynorm.mean, ynorm.std, dev,
     )
 
-    model = MLP(in_dim=spec.in_dim, out_dim=pool.y.shape[1])
+    model = MLP(spec.in_dim, spec.out_dim, arch.hidden, arch.activation)
     best_state, best_epoch, best_metrics, history = train(
         model,
         Xtr, ytr, Xva, yva,
@@ -361,7 +423,7 @@ def main(
     print(f"Saved training history to {out / 'train_history.csv'} "
           f"({len(history)} epochs)")
 
-    meta = spec.to_meta()
+    meta = spec.to_meta(arch)
     meta["training"] = {
         "epochs": epochs,
         "epochs_completed": len(history),
@@ -380,7 +442,8 @@ def main(
         "best_rollout_error_rad": float(best_metrics["rollout"]),
         "final_val_loss": float(hist_df["val"].iloc[-1]),
         "shipped_weights": f"best_on_{select_on}",
-        "pool_files": [f.name for f in csv_files],
+        "pool_files": [f.name for f in source_files],
+        "source": "lerobot" if lerobot_path is not None else "csv",
         **split_info,
     }
     with open(out / "model_meta.json", "w", encoding="utf-8") as f:
@@ -406,15 +469,25 @@ if __name__ == "__main__":
             _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
     p = argparse.ArgumentParser(
-        description="Train the three-joint hydraulic actuator model.",
+        description="Train a hydraulic actuator forward model. Defaults reproduce "
+                    "the shipped three-joint excavator arm model.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     io = p.add_argument_group("data and output")
-    io.add_argument(
-        "--csv", required=True,
+    source = io.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--csv",
         help="Training CSV file, directory, or glob. Relative paths are tried "
-             "against the working directory, then against this script's directory.",
+             "against the working directory, then training/, then the repo root.",
+    )
+    source.add_argument(
+        "--lerobot",
+        help="Root of a LeRobot v3.0 dataset (the directory holding meta/ and "
+             "data/). Channel names in --q-cols/--qdot-cols/--u-cols are matched "
+             "against the element names in meta/info.json, so they can name slots "
+             "inside observation.state / action. The dataset must already carry "
+             "velocity; this does not differentiate position for you.",
     )
     io.add_argument(
         "--out", default=None,
@@ -466,8 +539,50 @@ if __name__ == "__main__":
     ro.add_argument("--rollout-horizon-sec", type=float, default=5.0)
     ro.add_argument("--rollout-starts", type=int, default=256)
 
+    arch = p.add_argument_group("model architecture")
+    arch.add_argument(
+        "--hidden", type=int, nargs="+", default=[128, 128, 128], metavar="WIDTH",
+        help="Hidden layer widths; the count of values is the number of layers",
+    )
+    arch.add_argument(
+        "--activation", default="relu", choices=sorted(ACTIVATIONS),
+        help="Hidden-layer activation. Both are parameterless, so this does not "
+             "change the state_dict key layout the sim side loads",
+    )
+
+    ch = p.add_argument_group("input/output channels")
+    ch.add_argument(
+        "--q-cols", nargs="+", default=list(Q_COLS), metavar="COL",
+        help="Joint-position columns. Their count is the joint count, and hence "
+             "part of the input width",
+    )
+    ch.add_argument(
+        "--qdot-cols", nargs="+", default=list(QDOT_COLS), metavar="COL",
+        help="Joint-velocity columns; their count is also the OUTPUT width. Must "
+             "match --q-cols in length -- position is integrated from velocity",
+    )
+    ch.add_argument(
+        "--u-cols", nargs="+", default=list(U_COLS), metavar="COL",
+        help="Command columns. Free of the joint count: three joints driven by "
+             "four valve channels is expressible",
+    )
+    ch.add_argument("--time-col", default=TIME_COL, help="Timestamp column")
+
     win = p.add_argument_group("input window geometry")
+    win.add_argument(
+        "--dt", type=float, default=None,
+        help="Control period in seconds. Defaults to 0.01 for --csv, and to 1/fps "
+             "from meta/info.json for --lerobot",
+    )
+    win.add_argument(
+        "--position-history-sec", type=float, default=0.0,
+        help="Position history depth; 0 means the current position only",
+    )
     win.add_argument("--velocity-history-sec", type=float, default=0.10)
+    win.add_argument(
+        "--velocity-stride-sec", type=float, default=0.01,
+        help="Spacing between velocity history taps",
+    )
     win.add_argument("--command-history-sec", type=float, default=0.99)
     win.add_argument(
         "--command-stride-sec", type=float, default=0.03,
@@ -479,6 +594,7 @@ if __name__ == "__main__":
     main(
         args.csv,
         args.out,
+        lerobot_path=args.lerobot,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
@@ -493,8 +609,17 @@ if __name__ == "__main__":
         rollout_every=max(args.rollout_every, 1),
         rollout_horizon_sec=args.rollout_horizon_sec,
         rollout_starts=args.rollout_starts,
+        dt=args.dt,
+        position_history_sec=args.position_history_sec,
         velocity_history_sec=args.velocity_history_sec,
+        velocity_stride_sec=args.velocity_stride_sec,
         command_history_sec=args.command_history_sec,
         command_stride_sec=args.command_stride_sec,
+        q_cols=args.q_cols,
+        qdot_cols=args.qdot_cols,
+        u_cols=args.u_cols,
+        time_col=args.time_col,
+        hidden=args.hidden,
+        activation=args.activation,
         device=args.device,
     )

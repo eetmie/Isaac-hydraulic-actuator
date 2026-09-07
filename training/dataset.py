@@ -3,8 +3,11 @@
 This module is the single source of truth for everything the training side and
 the evaluation side must agree on:
 
-* ``WindowSpec``   -- the history geometry, and the one definition of how long a
-  history is (``history_samples``) and how wide a feature vector is (``in_dim``).
+* ``WindowSpec``   -- the columns and history geometry, and the one definition
+  of how long a history is (``history_samples``) and how wide a feature vector
+  is (``in_dim``). Its column tuples are what set the model's width, so nothing
+  in this module assumes three joints.
+* ``ModelSpec``    -- the one definition of the network architecture.
 * ``build_features`` -- the one definition of the ``[q | qdot | u]`` layout.
 * ``Normalizer``   -- the one definition of normalization and of the four
   ``.npy`` filenames in a model directory.
@@ -26,30 +29,54 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Tuple
 import glob
 import os
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
+
+if TYPE_CHECKING:  # pandas is imported lazily -- see _pandas()
+    import pandas as pd
+
+
+def _pandas():
+    """Import pandas on first use.
+
+    Only the CSV loaders need it. Keeping it out of module scope means the spec,
+    feature and model layer -- and therefore test_contract.py's parity tests --
+    import cleanly in the Isaac Sim environment, which ships no pandas.
+    """
+    import pandas as pd
+
+    return pd
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+"""Repository root: this file lives in ``training/``, artifacts live above it."""
 
 
 # ----------------------------------------------------------------------------
 # Column contract (matches data_collection/drive_logger.py output)
 # ----------------------------------------------------------------------------
+#
+# These are the excavator's column names, and nothing but WindowSpec's defaults.
+# A different machine passes its own via --q-cols / --qdot-cols / --u-cols; the
+# widths of those lists are what set the model's input and output size.
 
 TIME_COL = "timestamp"
-U_COLS = ["combined_cmd_lift", "combined_cmd_tilt", "combined_cmd_scoop"]
-Q_COLS = ["joint_pos_boom", "joint_pos_arm", "joint_pos_bucket"]
-QDOT_COLS = ["joint_vel_boom", "joint_vel_arm", "joint_vel_bucket"]
+U_COLS = ("combined_cmd_lift", "combined_cmd_tilt", "combined_cmd_scoop")
+Q_COLS = ("joint_pos_boom", "joint_pos_arm", "joint_pos_bucket")
+QDOT_COLS = ("joint_vel_boom", "joint_vel_arm", "joint_vel_bucket")
 
-N_JOINTS = 3
-
-HIDDEN = [128, 128, 128]
-ACTIVATION = "relu"
 TARGET_MODE = "delta_velocity"
+"""Not a knob: the delta reconstruction is wired into four rollout recurrences."""
+
+ACTIVATIONS = {"relu": nn.ReLU, "tanh": nn.Tanh}
+"""Selectable activations. Both are parameterless, so the nn.Sequential index
+numbering -- and hence the state_dict keys the sim side loads with strict=True --
+is identical whichever is chosen."""
 
 
 # ----------------------------------------------------------------------------
@@ -57,14 +84,51 @@ TARGET_MODE = "delta_velocity"
 # ----------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class WindowSpec:
-    """History geometry of one training sample.
+class ModelSpec:
+    """Network architecture, independent of what the inputs mean.
 
-    Defaults are what measured best on this machine: current position, 0.10 s of
-    dense velocity history, and 0.99 s of valve-command history sampled every
-    30 ms. Widening either history hurt, and so did sparser command taps.
+    Kept separate from :class:`WindowSpec` because the two are chosen for
+    different reasons: the window is a property of the machine's dynamics, the
+    architecture is a property of the fit.
     """
 
+    hidden: Tuple[int, ...] = (128, 128, 128)
+    activation: str = "relu"
+
+    def __post_init__(self) -> None:
+        if self.activation not in ACTIVATIONS:
+            raise ValueError(
+                f"Unknown activation {self.activation!r}; expected one of {sorted(ACTIVATIONS)}"
+            )
+        if not self.hidden or any(h <= 0 for h in self.hidden):
+            raise ValueError(f"hidden must be a non-empty list of positive widths, got {self.hidden}")
+
+    @classmethod
+    def from_meta(cls, meta: Dict) -> "ModelSpec":
+        return cls(
+            hidden=tuple(meta["model"]["hidden"]),
+            activation=meta["model"]["activation"],
+        )
+
+
+@dataclass(frozen=True)
+class WindowSpec:
+    """Which columns feed one training sample, and over what history.
+
+    The column tuples are what set the model's width: ``in_dim`` and ``out_dim``
+    are derived from them, so a one-joint slew model and a three-joint arm model
+    differ only in what is passed here. Command width is free of joint width, so
+    a three-joint arm driven by four valve channels is expressible.
+
+    History defaults are what measured best on the excavator: current position,
+    0.10 s of dense velocity history, and 0.99 s of valve-command history sampled
+    every 30 ms. Widening either history hurt, and so did sparser command taps.
+    """
+
+    q_cols: Tuple[str, ...] = Q_COLS
+    qdot_cols: Tuple[str, ...] = QDOT_COLS
+    u_cols: Tuple[str, ...] = U_COLS
+    time_col: str = TIME_COL
     dt: float = 0.01            # 100 Hz control period
     hist_q: int = 1             # current position only
     hist_qdot: int = 11         # t ... t-0.10 s at 100 Hz
@@ -72,6 +136,39 @@ class WindowSpec:
     qdot_stride: int = 1
     u_stride: int = 3
     include_q: bool = True
+
+    def __post_init__(self) -> None:
+        # Tolerate lists from JSON / argparse so callers do not have to remember.
+        for name in ("q_cols", "qdot_cols", "u_cols"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        if self.n_q != self.n_qdot:
+            raise ValueError(
+                f"q_cols and qdot_cols must describe the same joints: got {self.n_q} "
+                f"position columns and {self.n_qdot} velocity columns. Position is "
+                "integrated from velocity, so the two widths are structurally tied."
+            )
+        if self.n_q == 0 or self.n_u == 0:
+            raise ValueError("q_cols/qdot_cols and u_cols must each name at least one column")
+
+    @property
+    def n_q(self) -> int:
+        """Number of joint-position channels."""
+        return len(self.q_cols)
+
+    @property
+    def n_qdot(self) -> int:
+        """Number of joint-velocity channels; also the network's output width."""
+        return len(self.qdot_cols)
+
+    @property
+    def n_u(self) -> int:
+        """Number of command channels, free of the joint count."""
+        return len(self.u_cols)
+
+    @property
+    def out_dim(self) -> int:
+        """One predicted velocity delta per joint."""
+        return self.n_qdot
 
     @property
     def history_samples(self) -> int:
@@ -89,13 +186,16 @@ class WindowSpec:
 
     @property
     def in_dim(self) -> int:
-        n_taps = (self.hist_q if self.include_q else 0) + self.hist_qdot + self.hist_u
-        return N_JOINTS * n_taps
+        return (
+            (self.n_q * self.hist_q if self.include_q else 0)
+            + self.n_qdot * self.hist_qdot
+            + self.n_u * self.hist_u
+        )
 
     @property
     def qdot_offset(self) -> int:
         """Column where the current qdot sits inside a feature vector."""
-        return N_JOINTS * self.hist_q if self.include_q else 0
+        return self.n_q * self.hist_q if self.include_q else 0
 
     @classmethod
     def from_seconds(
@@ -104,25 +204,63 @@ class WindowSpec:
         command_history_sec: float,
         command_stride_sec: float,
         dt: float = 0.01,
+        position_history_sec: float = 0.0,
+        velocity_stride_sec: Optional[float] = None,
+        q_cols: Sequence[str] = Q_COLS,
+        qdot_cols: Sequence[str] = QDOT_COLS,
+        u_cols: Sequence[str] = U_COLS,
+        time_col: str = TIME_COL,
     ) -> "WindowSpec":
-        if velocity_history_sec < 0.0 or command_history_sec < 0.0:
+        """Build a spec from durations in seconds rather than tap counts.
+
+        Args:
+            velocity_history_sec: How far back the velocity history reaches [s].
+            command_history_sec: How far back the command history reaches [s].
+            command_stride_sec: Spacing between command taps [s].
+            dt: Control period [s].
+            position_history_sec: How far back the position history reaches [s];
+                0 means the current position only.
+            velocity_stride_sec: Spacing between velocity taps [s]; defaults to ``dt``.
+            q_cols: Joint-position column names.
+            qdot_cols: Joint-velocity column names.
+            u_cols: Command column names.
+            time_col: Timestamp column name.
+        """
+        if dt <= 0.0:
+            raise ValueError("dt must be positive")
+        if velocity_history_sec < 0.0 or command_history_sec < 0.0 or position_history_sec < 0.0:
             raise ValueError("History durations must be non-negative")
         if command_stride_sec <= 0.0:
             raise ValueError("Command stride must be positive")
+        if velocity_stride_sec is not None and velocity_stride_sec <= 0.0:
+            raise ValueError("Velocity stride must be positive")
         u_stride = max(1, int(round(command_stride_sec / dt)))
+        qdot_stride = 1 if velocity_stride_sec is None else max(1, int(round(velocity_stride_sec / dt)))
         return cls(
+            q_cols=tuple(q_cols),
+            qdot_cols=tuple(qdot_cols),
+            u_cols=tuple(u_cols),
+            time_col=time_col,
             dt=dt,
-            hist_qdot=int(round(velocity_history_sec / dt)) + 1,
+            hist_q=int(round(position_history_sec / dt)) + 1,
+            hist_qdot=int(round(velocity_history_sec / (dt * qdot_stride))) + 1,
             hist_u=int(round(command_history_sec / (dt * u_stride))) + 1,
+            qdot_stride=qdot_stride,
             u_stride=u_stride,
         )
 
     @classmethod
     def from_meta(cls, meta: Dict) -> "WindowSpec":
         """Read a spec back out of a model_meta.json payload."""
-        if meta["model"]["activation"] != ACTIVATION or meta["target_mode"] != TARGET_MODE:
-            raise ValueError("Model must use ReLU and the delta_velocity target")
+        if meta["target_mode"] != TARGET_MODE:
+            raise ValueError(
+                f"Model target must be {TARGET_MODE!r}, got {meta['target_mode']!r}"
+            )
         return cls(
+            q_cols=tuple(meta["q_cols"]),
+            qdot_cols=tuple(meta["qdot_cols"]),
+            u_cols=tuple(meta["u_cols"]),
+            time_col=meta["time_col"],
             dt=meta["dt"],
             hist_q=meta["hist_q"],
             hist_qdot=meta["hist_qdot"],
@@ -132,13 +270,18 @@ class WindowSpec:
             include_q=meta["include_q"],
         )
 
-    def to_meta(self) -> Dict:
+    def to_meta(self, model_spec: Optional[ModelSpec] = None) -> Dict:
         """Everything in model_meta.json except the ``training`` block.
 
         This is the ONLY place the artifact contract is written. Every key here
         is read with ``[]`` by actuators/hydraulic_actuator.py, so a rename is an
         instant KeyError on the sim side -- test_contract.py pins the key list.
+
+        Args:
+            model_spec: Architecture to record. Defaults to :class:`ModelSpec`'s
+                own defaults.
         """
+        model_spec = ModelSpec() if model_spec is None else model_spec
         return {
             "dt": self.dt,
             "target_mode": TARGET_MODE,
@@ -151,10 +294,10 @@ class WindowSpec:
             "hist_qdot_sec": float((self.hist_qdot - 1) * self.dt * self.qdot_stride),
             "hist_u_sec": float((self.hist_u - 1) * self.dt * self.u_stride),
             "include_q": self.include_q,
-            "time_col": TIME_COL,
-            "u_cols": U_COLS,
-            "q_cols": Q_COLS,
-            "qdot_cols": QDOT_COLS,
+            "time_col": self.time_col,
+            "u_cols": list(self.u_cols),
+            "q_cols": list(self.q_cols),
+            "qdot_cols": list(self.qdot_cols),
             "units": {
                 "timestamp_raw": "s",
                 "joint_position": "rad",
@@ -162,10 +305,10 @@ class WindowSpec:
                 "command": "normalized_-1_to_1",
             },
             "model": {
-                "hidden": HIDDEN,
-                "activation": ACTIVATION,
+                "hidden": list(model_spec.hidden),
+                "activation": model_spec.activation,
                 "in_dim": self.in_dim,
-                "out_dim": N_JOINTS,
+                "out_dim": self.out_dim,
                 "target": TARGET_MODE,
             },
         }
@@ -264,27 +407,52 @@ class Normalizer:
 # ----------------------------------------------------------------------------
 
 class MLP(nn.Module):
-    """Plain ReLU MLP.
+    """Plain feed-forward MLP with a selectable activation.
 
     actuators/hydraulic_actuator.py defines an identical network independently.
     The nn.Sequential layout must stay exactly this shape, because it determines
     the state_dict key names (net.0.weight, net.2.weight, ...) that the sim side
     loads with strict=True. Inserting any layer renumbers those keys.
+
+    Every activation in :data:`ACTIVATIONS` is parameterless, so switching one
+    for another leaves that numbering -- and therefore checkpoint compatibility
+    at the key level -- untouched.
     """
 
-    def __init__(self, in_dim: int, out_dim: int, hidden: Optional[List[int]] = None):
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        hidden: Optional[Sequence[int]] = None,
+        activation: str = "relu",
+    ):
         super().__init__()
-        hidden = HIDDEN if hidden is None else hidden
+        hidden = ModelSpec().hidden if hidden is None else tuple(hidden)
+        if activation not in ACTIVATIONS:
+            raise ValueError(
+                f"Unknown activation {activation!r}; expected one of {sorted(ACTIVATIONS)}"
+            )
+        make_activation = ACTIVATIONS[activation]
         layers: List[nn.Module] = []
         prev = in_dim
         for h in hidden:
-            layers += [nn.Linear(prev, h), nn.ReLU()]
+            layers += [nn.Linear(prev, h), make_activation()]
             prev = h
         layers += [nn.Linear(prev, out_dim)]
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+    @classmethod
+    def from_meta(cls, meta: Dict) -> "MLP":
+        """Build the network a model_meta.json describes."""
+        return cls(
+            meta["model"]["in_dim"],
+            meta["model"]["out_dim"],
+            meta["model"]["hidden"],
+            meta["model"]["activation"],
+        )
 
 
 # ----------------------------------------------------------------------------
@@ -308,32 +476,70 @@ class Chunk:
         return len(self.q)
 
 
-def resolve_csvs(value: str) -> List[Path]:
-    """Accept a file, a directory, a glob, or any of those relative to this script.
+_SEARCH_ROOTS = (Path(__file__).resolve().parent, PROJECT_ROOT)
+"""Where a relative path is looked for after the working directory: ``training/``
+first, then the repository root. Both matter because these tools get run from
+either place -- ``python train.py`` from inside ``training/``, and
+``python training/train.py`` from the root."""
 
-    The script-relative fallback matters because these tools are normally run
-    through Isaac Lab's launcher from the repository root, not from this
-    directory. Every form -- including globs -- is tried against the working
-    directory first and this script's directory second, so ``--csv my_logs`` and
-    ``--csv "my_logs/*.csv"`` both work from either place.
+
+def resolve_csvs(value: str) -> List[Path]:
+    """Accept a file, a directory, a glob, or any of those relative to the project.
+
+    Every form -- including globs -- is tried against the working directory
+    first, then ``training/``, then the repository root, so ``--csv my_logs`` and
+    ``--csv "my_logs/*.csv"`` both work from any of the three.
     """
-    here = Path(__file__).resolve().parent
-    for base in (Path(value), here / value):
+    for base in (Path(value), *(root / value for root in _SEARCH_ROOTS)):
         if base.is_file():
             return [base]
         if base.is_dir():
             return sorted(base.glob("*.csv"))
     # glob.glob, not Path.glob: the latter raises on an absolute pattern, which is
     # exactly what you get from a launcher script that expands paths for you.
-    for pattern in (value, str(here / value)):
+    for pattern in (value, *(str(root / value) for root in _SEARCH_ROOTS)):
         matches = sorted(Path(p) for p in glob.glob(pattern) if os.path.isfile(p))
         if matches:
             return matches
     return []
 
 
-def resample_to_fixed_dt(df: pd.DataFrame, dt: float, time_col: str) -> pd.DataFrame:
-    """Resample one continuous segment onto a uniform time grid."""
+def _resolve_dir(value: str) -> Path:
+    """First existing directory among the search roots, else the literal path.
+
+    Falling back to the literal keeps the caller's own error message pointed at
+    what the user actually typed, rather than at a guess.
+    """
+    for base in (Path(value), *(root / value for root in _SEARCH_ROOTS)):
+        if base.is_dir():
+            return base
+    return Path(value)
+
+
+def resolve_model_dir(value: str) -> Path:
+    """Locate a trained model directory the same way :func:`resolve_csvs` does.
+
+    Model directories live at the repository root (``models/arm``), while these
+    tools live one level down, so a bare ``--model models/arm`` has to resolve
+    upwards as well as against the working directory.
+    """
+    return _resolve_dir(value)
+
+
+def resolve_dataset_dir(value: str) -> Path:
+    """Locate a dataset root (e.g. a LeRobot tree) the same way."""
+    return _resolve_dir(value)
+
+
+def resample_to_fixed_dt(df: "pd.DataFrame", spec: WindowSpec) -> "pd.DataFrame":
+    """Resample one continuous segment onto a uniform time grid.
+
+    Args:
+        df: One continuous segment, with the spec's columns present.
+        spec: Supplies the time column, the data columns and the period [s].
+    """
+    pd = _pandas()
+    time_col, dt = spec.time_col, spec.dt
     df = df.sort_values(time_col).drop_duplicates(time_col)
     if len(df) < 2:
         return df.copy()
@@ -344,7 +550,7 @@ def resample_to_fixed_dt(df: pd.DataFrame, dt: float, time_col: str) -> pd.DataF
     out = pd.DataFrame({time_col: t_grid})
 
     x = df[time_col].to_numpy(np.float64)
-    columns = Q_COLS + QDOT_COLS + U_COLS
+    columns = list(spec.q_cols + spec.qdot_cols + spec.u_cols)
     if "cmd_stale" in df.columns:
         columns.append("cmd_stale")
     for col in columns:
@@ -358,7 +564,7 @@ def resample_to_fixed_dt(df: pd.DataFrame, dt: float, time_col: str) -> pd.DataF
         if valid.sum() < 2:
             out[col] = y[valid][0] if valid.sum() == 1 else np.nan
             continue
-        if col in U_COLS or col == "cmd_stale":
+        if col in spec.u_cols or col == "cmd_stale":
             # Commands are held by the real controller, not ramped between samples.
             idx = np.searchsorted(x[valid], t_grid, side="right") - 1
             out[col] = y[valid][np.clip(idx, 0, valid.sum() - 1)]
@@ -368,12 +574,13 @@ def resample_to_fixed_dt(df: pd.DataFrame, dt: float, time_col: str) -> pd.DataF
 
 
 def split_into_segments(
-    df: pd.DataFrame,
+    df: "pd.DataFrame",
     time_col: str,
     dt: float,
     max_gap_factor: float = 3.0,
-) -> List[pd.DataFrame]:
+) -> List["pd.DataFrame"]:
     """Split one file wherever its recorded timeline is discontinuous."""
+    pd = _pandas()
     df = df.copy()
     df[time_col] = pd.to_numeric(df[time_col], errors="coerce")
     df = df.dropna(subset=[time_col])
@@ -416,24 +623,25 @@ def load_chunks(path: Path, spec: WindowSpec) -> List[Chunk]:
     pre-refactor code did -- would let a history window span the resulting hole
     as though it were contiguous.
     """
+    pd = _pandas()
     df = pd.read_csv(path)
-    required = [TIME_COL] + Q_COLS + QDOT_COLS + U_COLS
+    required = [spec.time_col, *spec.q_cols, *spec.qdot_cols, *spec.u_cols]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"{path.name} is missing required columns: {', '.join(missing)}")
 
-    commands = df[U_COLS].apply(pd.to_numeric, errors="coerce").to_numpy()
+    commands = df[list(spec.u_cols)].apply(pd.to_numeric, errors="coerce").to_numpy()
     if np.isfinite(commands).any() and np.nanmax(np.abs(commands)) > 1.001:
         raise ValueError(f"{path.name} contains valve commands outside [-1, 1]")
 
-    segments = split_into_segments(df, TIME_COL, spec.dt)
+    segments = split_into_segments(df, spec.time_col, spec.dt)
     if not segments:
         raise ValueError(f"{path.name} has no continuous timestamped data")
 
     out: List[Chunk] = []
     for raw in segments:
-        seg = resample_to_fixed_dt(raw, spec.dt, TIME_COL)
-        values = seg[Q_COLS + QDOT_COLS + U_COLS].to_numpy(np.float64)
+        seg = resample_to_fixed_dt(raw, spec)
+        values = seg[list(spec.q_cols + spec.qdot_cols + spec.u_cols)].to_numpy(np.float64)
         good = np.isfinite(values).all(axis=1)
         if "cmd_stale" in seg.columns:
             stale = pd.to_numeric(seg["cmd_stale"], errors="coerce").fillna(0.0).to_numpy()
@@ -446,10 +654,10 @@ def load_chunks(path: Path, spec: WindowSpec) -> List[Chunk]:
             out.append(
                 Chunk(
                     name=f"{path.stem}#{len(out)}",
-                    q=part[Q_COLS].to_numpy(np.float32),
-                    qdot=part[QDOT_COLS].to_numpy(np.float32),
-                    u=part[U_COLS].to_numpy(np.float32),
-                    t_end=float(part[TIME_COL].iloc[-1]),
+                    q=part[list(spec.q_cols)].to_numpy(np.float32),
+                    qdot=part[list(spec.qdot_cols)].to_numpy(np.float32),
+                    u=part[list(spec.u_cols)].to_numpy(np.float32),
+                    t_end=float(part[spec.time_col].iloc[-1]),
                 )
             )
     return out
@@ -483,12 +691,28 @@ class Pool:
         return len(self.X)
 
 
-def build_pool(paths: List[Path], spec: WindowSpec, label: str = "", verbose: bool = True) -> Pool:
-    """Window every chunk of every CSV into one flat array.
+def build_pool(
+    paths: List[Path],
+    spec: WindowSpec,
+    label: str = "",
+    verbose: bool = True,
+    loader: Optional[Callable[[Path, WindowSpec], List[Chunk]]] = None,
+) -> Pool:
+    """Window every chunk of every source into one flat array.
 
     ``counts`` and ``names`` are the interface to splits.py: they locate every
     chunk in the flat arrays and identify its source recording.
+
+    Args:
+        paths: CSV files, or dataset roots when ``loader`` reads a directory.
+        spec: Channel and window geometry.
+        label: Name used in progress output.
+        verbose: Whether to print per-source counts.
+        loader: How to turn one path into chunks. Defaults to :func:`load_chunks`
+            (CSV); pass ``lerobot_source.load_lerobot_chunks`` for a LeRobot
+            dataset root. Everything after this call is source-agnostic.
     """
+    loader = load_chunks if loader is None else loader
     xs: List[np.ndarray] = []
     ys: List[np.ndarray] = []
     qs: List[np.ndarray] = []
@@ -499,7 +723,7 @@ def build_pool(paths: List[Path], spec: WindowSpec, label: str = "", verbose: bo
     t_ends: List[float] = []
 
     for path in paths:
-        chunks = load_chunks(path, spec)
+        chunks = loader(path, spec)
         usable = 0
         for chunk in chunks:
             X, y = build_windows(chunk.q, chunk.qdot, chunk.u, spec)
@@ -533,10 +757,10 @@ def build_pool(paths: List[Path], spec: WindowSpec, label: str = "", verbose: bo
         t_ends=t_ends,
         files=[p.name for p in paths],
     )
-    if pool.X.shape[1] != spec.in_dim or pool.y.shape[1] != N_JOINTS:
+    if pool.X.shape[1] != spec.in_dim or pool.y.shape[1] != spec.out_dim:
         raise RuntimeError(
             f"Unexpected dimensions: X={pool.X.shape[1]}, y={pool.y.shape[1]}, "
-            f"expected X={spec.in_dim}, y={N_JOINTS}"
+            f"expected X={spec.in_dim}, y={spec.out_dim}"
         )
     if not (np.isfinite(pool.X).all() and np.isfinite(pool.y).all()):
         raise RuntimeError("Non-finite values remain after preprocessing")

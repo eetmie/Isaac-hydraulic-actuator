@@ -9,8 +9,8 @@ mismatch shows up only as wrong robot behaviour in Isaac Sim.
 test_parity is what catches that. Run it after any change to the feature layout,
 the meta keys, or the network architecture.
 
-    python test_contract.py                # split and meta tests only
-    python test_contract.py --model model  # adds the two parity tests
+    python test_contract.py                     # split and meta tests only
+    python test_contract.py --model models/arm  # adds the two parity tests
 
 Function names start with test_ so `pytest test_contract.py` also works, but
 pytest is not required.
@@ -19,6 +19,7 @@ pytest is not required.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -26,7 +27,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dataset import WindowSpec, build_features
+from dataset import PROJECT_ROOT, ModelSpec, WindowSpec, build_features, resolve_model_dir
 from splits import (
     recording_id,
     session_ids,
@@ -40,6 +41,7 @@ from splits import (
 REQUIRED_META = [
     "dt", "hist_q", "hist_qdot", "hist_u",
     "qdot_stride", "u_stride", "include_q", "target_mode",
+    "q_cols", "qdot_cols", "u_cols", "time_col",
 ]
 REQUIRED_META_MODEL = ["in_dim", "out_dim", "hidden", "activation"]
 
@@ -51,30 +53,183 @@ def _load_actuator_class():
     plain ``from actuators import ...`` only works inside Isaac Sim. The net
     itself needs nothing but numpy and torch, so load its module by path and
     keep this test runnable from a bare interpreter.
+
+    The path reaches up out of ``training/``: that the sim side is a sibling
+    package this test can only get at by path, never by import, is exactly the
+    independence the parity test exists to exploit.
     """
     import importlib.util
 
-    path = Path(__file__).resolve().parent / "actuators" / "hydraulic_actuator.py"
+    path = PROJECT_ROOT / "actuators" / "hydraulic_actuator.py"
     spec = importlib.util.spec_from_file_location("_hydraulic_actuator", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.HydraulicActuatorNet
 
 
+# One-joint slew shape: the geometry a cabin-slew model would be trained with.
+SLEW_SPEC = WindowSpec(
+    q_cols=("joint_pos_slew",),
+    qdot_cols=("joint_vel_slew",),
+    u_cols=("combined_cmd_slew",),
+)
+
+# Three joints, four command channels: widths are independent by design.
+WIDE_U_SPEC = WindowSpec(u_cols=("cmd_a", "cmd_b", "cmd_c", "cmd_d"))
+
+
 def test_meta_roundtrip() -> None:
     """A spec survives a trip through model_meta.json, and keeps every sim key."""
-    for spec in (
+    specs = (
         WindowSpec(),
         WindowSpec.from_seconds(0.2, 1.5, 0.03),
         WindowSpec(hist_q=1, hist_qdot=6, hist_u=20, qdot_stride=2, u_stride=5),
-    ):
-        meta = spec.to_meta()
-        for key in REQUIRED_META:
-            assert key in meta, f"model_meta.json lost required key {key!r}"
-        for key in REQUIRED_META_MODEL:
-            assert key in meta["model"], f"model_meta.json lost required key model.{key!r}"
-        assert WindowSpec.from_meta(meta) == spec, "spec did not survive the meta round trip"
-        assert meta["model"]["in_dim"] == spec.in_dim
+        SLEW_SPEC,
+        WIDE_U_SPEC,
+    )
+    archs = (ModelSpec(), ModelSpec(hidden=(64, 64), activation="tanh"), ModelSpec(hidden=(32,)))
+    for spec in specs:
+        for arch in archs:
+            meta = spec.to_meta(arch)
+            for key in REQUIRED_META:
+                assert key in meta, f"model_meta.json lost required key {key!r}"
+            for key in REQUIRED_META_MODEL:
+                assert key in meta["model"], f"model_meta.json lost required key model.{key!r}"
+            assert WindowSpec.from_meta(meta) == spec, "spec did not survive the meta round trip"
+            assert ModelSpec.from_meta(meta) == arch, "arch did not survive the meta round trip"
+            assert meta["model"]["in_dim"] == spec.in_dim
+            assert meta["model"]["out_dim"] == spec.out_dim
+
+
+def test_width_derivation() -> None:
+    """in_dim/out_dim follow the column lists, and mismatched widths are rejected."""
+    assert SLEW_SPEC.out_dim == 1
+    assert SLEW_SPEC.in_dim == SLEW_SPEC.hist_q + SLEW_SPEC.hist_qdot + SLEW_SPEC.hist_u
+
+    # Commands are counted separately from joints.
+    assert WIDE_U_SPEC.out_dim == 3
+    assert WIDE_U_SPEC.in_dim == (
+        3 * WIDE_U_SPEC.hist_q + 3 * WIDE_U_SPEC.hist_qdot + 4 * WIDE_U_SPEC.hist_u
+    )
+
+    # Position is integrated from velocity, so those two widths cannot differ.
+    try:
+        WindowSpec(q_cols=("a", "b"), qdot_cols=("c",), u_cols=("d",))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("mismatched q_cols/qdot_cols widths were accepted")
+
+    try:
+        ModelSpec(activation="selu")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown activation was accepted")
+
+
+def test_activation_keeps_state_dict_layout() -> None:
+    """Swapping the activation must not renumber the nn.Sequential keys.
+
+    The sim side loads with strict=True, so a renumbering would break every
+    checkpoint. Both activations are parameterless, and this pins that.
+    """
+    from dataset import MLP
+
+    relu = MLP(8, 2, (4, 4), "relu")
+    tanh = MLP(8, 2, (4, 4), "tanh")
+    assert relu.state_dict().keys() == tanh.state_dict().keys(), (
+        "activation change renumbered the state_dict keys"
+    )
+
+
+# A LeRobot meta/info.json shaped like the real thing: one feature names its
+# elements with a flat list, the other with the {"motors": [...]} dict. Both
+# spellings appear in published datasets and the reader must accept either.
+LEROBOT_INFO = {
+    "codebase_version": "v3.0",
+    "fps": 100,
+    "features": {
+        "observation.state": {
+            "dtype": "float32", "shape": [4],
+            "names": ["pos_a", "pos_b", "vel_a", "vel_b"],
+        },
+        "action": {
+            "dtype": "float32", "shape": [3],
+            "names": {"motors": ["cmd_slew", "cmd_a", "cmd_b"]},
+        },
+        "load": {"dtype": "float32", "shape": [1], "names": None},
+        "observation.images.cam": {"dtype": "video", "shape": [8, 8, 3], "names": None},
+        "timestamp": {"dtype": "float32", "shape": [1], "names": None},
+        "episode_index": {"dtype": "int64", "shape": [1], "names": None},
+    },
+}
+
+
+def test_lerobot_channel_resolution() -> None:
+    """Channel names resolve to the right slot of the right vector feature.
+
+    This is the whole of the LeRobot mapping: everything downstream sees plain
+    arrays. Getting an index wrong here silently trains on the wrong joint, so
+    the three spellings and both ``names`` encodings are pinned.
+    """
+    import lerobot_source as ls
+
+    # Flat-list names, dict-of-lists names, and a scalar feature by its own key.
+    assert ls.resolve_channel(LEROBOT_INFO, "pos_b") == ("observation.state", 1)
+    assert ls.resolve_channel(LEROBOT_INFO, "vel_a") == ("observation.state", 2)
+    assert ls.resolve_channel(LEROBOT_INFO, "cmd_b") == ("action", 2)
+    assert ls.resolve_channel(LEROBOT_INFO, "load") == ("load", 0)
+
+    # Qualified and positional spellings.
+    assert ls.resolve_channel(LEROBOT_INFO, "action/cmd_slew") == ("action", 0)
+    assert ls.resolve_channel(LEROBOT_INFO, "observation.state[3]") == ("observation.state", 3)
+
+    # Video features are not channels.
+    assert not any(c.startswith("observation.images") for c in ls.available_channels(LEROBOT_INFO))
+    # Nor are the reserved bookkeeping columns.
+    assert not any(c.startswith(("timestamp", "episode_index")) for c in ls.available_channels(LEROBOT_INFO))
+
+    # A missing channel must raise rather than be invented -- this is what makes
+    # "the dataset must carry velocity" a contract instead of a hope.
+    try:
+        ls.resolve_channels(LEROBOT_INFO, ("pos_a", "vel_missing"))
+    except KeyError as exc:
+        assert "vel_missing" in str(exc)
+    else:
+        raise AssertionError("a missing velocity channel was silently accepted")
+
+    # Ambiguity across two features must be reported, not guessed.
+    ambiguous = json.loads(json.dumps(LEROBOT_INFO))
+    ambiguous["features"]["action"]["names"] = {"motors": ["pos_a", "x", "y"]}
+    try:
+        ls.resolve_channel(ambiguous, "pos_a")
+    except KeyError as exc:
+        assert "ambiguous" in str(exc)
+    else:
+        raise AssertionError("an ambiguous channel name resolved silently")
+
+    assert abs(ls.dataset_dt(LEROBOT_INFO) - 1.0 / 100.0) < 1e-12
+
+
+def test_lerobot_rejects_other_versions(tmp_root=None) -> None:
+    """Only v3.0 is read; anything else names its own version and stops."""
+    import tempfile
+
+    import lerobot_source as ls
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "meta").mkdir()
+        (root / "meta" / "info.json").write_text(
+            json.dumps({"codebase_version": "v2.1", "fps": 100}), encoding="utf-8"
+        )
+        try:
+            ls.load_info(root)
+        except ValueError as exc:
+            assert "v2.1" in str(exc) and "v3.0" in str(exc)
+        else:
+            raise AssertionError("a v2.1 dataset was accepted")
 
 
 def test_split_no_leakage() -> None:
@@ -176,19 +331,25 @@ def test_parity(model_dir: str, tol: float = 1e-5) -> None:
 
     HydraulicActuatorNet = _load_actuator_class()
 
-    R = Rollout(Path(model_dir))
+    R = Rollout(resolve_model_dir(model_dir))
     spec = R.spec
     H = spec.history_samples
 
     rng = np.random.default_rng(0)
     T = H + 200
-    q = np.cumsum(rng.normal(0, 0.01, (T, 3)), axis=0).astype(np.float32)
-    qdot = rng.normal(0, 0.2, (T, 3)).astype(np.float32)
-    u = np.clip(rng.normal(0, 0.5, (T, 3)), -1, 1).astype(np.float32)
+    q = np.cumsum(rng.normal(0, 0.01, (T, spec.n_q)), axis=0).astype(np.float32)
+    qdot = rng.normal(0, 0.2, (T, spec.n_qdot)).astype(np.float32)
+    u = np.clip(rng.normal(0, 0.5, (T, spec.n_u)), -1, 1).astype(np.float32)
 
     reference = R.predict(build_features(q, qdot, u, spec))
 
-    net = HydraulicActuatorNet(model_dir, device="cpu")
+    net = HydraulicActuatorNet(resolve_model_dir(model_dir), device="cpu")
+    assert net.num_joints == spec.n_qdot, (
+        f"sim actuator reports {net.num_joints} joints, training spec says {spec.n_qdot}"
+    )
+    assert net.num_commands == spec.n_u, (
+        f"sim actuator reports {net.num_commands} commands, training spec says {spec.n_u}"
+    )
     net.reset()
     actual = np.stack([net.predict_velocity(q[t], qdot[t], u[t]) for t in range(T)])
 
@@ -211,22 +372,24 @@ def test_rollout_matches_eval(model_dir: str, tol: float = 1e-4) -> float:
     from eval import Rollout
     from rollout import RolloutScorer
 
-    R = Rollout(Path(model_dir))
+    R = Rollout(resolve_model_dir(model_dir))
     spec = R.spec
 
     # Synthetic, not logged: both implementations receive identical inputs, so
     # what is being compared is the recurrence, not the dynamics. Using a real
-    # log here would only tie the test to a dataset that does not ship.
+    # log here would only tie the test to a dataset that does not ship. The
+    # frequencies are generated per channel so this works at any model width.
     T = 1600
     t = np.arange(T, dtype=np.float32) * spec.dt
-    u = np.stack(
-        [np.sin(2 * np.pi * f * t + p) for f, p in ((0.31, 0.0), (0.53, 1.1), (0.79, 2.2))],
-        axis=1,
-    ).astype(np.float32)
-    qdot = (0.4 * np.stack(
-        [np.sin(2 * np.pi * f * t + p) for f, p in ((0.23, 0.7), (0.37, 1.9), (0.61, 0.3))],
-        axis=1,
-    )).astype(np.float32)
+
+    def waves(n: int, base: float, spread: float, scale: float = 1.0) -> np.ndarray:
+        return (scale * np.stack(
+            [np.sin(2 * np.pi * (base + i * spread) * t + 0.7 * i) for i in range(n)],
+            axis=1,
+        )).astype(np.float32)
+
+    u = waves(spec.n_u, 0.31, 0.22)
+    qdot = waves(spec.n_qdot, 0.23, 0.19, scale=0.4)
     q = np.cumsum(qdot * spec.dt, axis=0).astype(np.float32)
 
     horizon = 200
@@ -252,12 +415,18 @@ def test_rollout_matches_eval(model_dir: str, tol: float = 1e-4) -> float:
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--model", default=None, help="Model dir to run the parity test against")
+    p.add_argument(
+        "--model", default=None,
+        help="Model dir to run the parity tests against, e.g. models/arm",
+    )
     p.add_argument("--tol", type=float, default=1e-5)
     args = p.parse_args()
 
     failures = 0
-    for fn in (test_meta_roundtrip, test_split_no_leakage,
+    for fn in (test_meta_roundtrip, test_width_derivation,
+               test_activation_keeps_state_dict_layout,
+               test_lerobot_channel_resolution, test_lerobot_rejects_other_versions,
+               test_split_no_leakage,
                test_snippet_split_no_leakage, test_session_grouping):
         try:
             fn()

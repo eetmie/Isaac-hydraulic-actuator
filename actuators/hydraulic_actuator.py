@@ -1,35 +1,55 @@
 """
 Hydraulic actuator net.
 
-Wraps the trained MLP forward model (boom / arm / bucket).
-Input  : current joint positions (rad), velocity history (rad/s), and
-         normalized valve command history [-1, 1].
-Output : predicted next joint velocity (rad/s). The network predicts a velocity
+Wraps a trained MLP forward model.
+Input  : current joint positions [rad], velocity history [rad/s], and
+         normalized valve command history in [-1, 1].
+Output : predicted next joint velocity [rad/s]. The network predicts a velocity
          delta; the absolute next velocity is reconstructed here.
 
-The model is trained in rad / rad/s units.
-Cabin / slew is NOT covered by this model and must be controlled separately.
+The joint count, the command count and the architecture all come from the
+model directory's ``model_meta.json`` -- nothing here is fixed to one machine.
+One instance drives whatever joint group its model was trained on: a three-joint
+excavator arm and a one-joint cabin slew are two instances of this class, not
+two classes.
 
-Joint order: [boom/lift, arm/tilt, bucket/tool]
+Whether a model exists for a given joint group at all is the caller's problem.
+This class either loads one or raises; it has no degraded mode. Keeping the
+fallback decision in the sim script is what stops "no model yet" leaking into
+every layer.
+
+Joint order is whatever ``qdot_cols`` says in the metadata, and the caller must
+feed channels in that order -- see ``joint_names`` / ``command_names``.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
+from typing import Sequence
 
 import numpy as np
 import torch
 import torch.nn as nn
 
+# Must mirror training/dataset.py ACTIVATIONS. Both entries are parameterless, so
+# the nn.Sequential numbering -- and hence the state_dict keys loaded below with
+# strict=True -- is the same whichever is used.
+ACTIVATIONS = {"relu": nn.ReLU, "tanh": nn.Tanh}
+
+
 class MLP(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, hidden: List[int]):
+    def __init__(self, in_dim: int, out_dim: int, hidden: Sequence[int], activation: str = "relu"):
         super().__init__()
-        layers: List[nn.Module] = []
+        if activation not in ACTIVATIONS:
+            raise ValueError(
+                f"Unknown activation {activation!r}; expected one of {sorted(ACTIVATIONS)}"
+            )
+        make_activation = ACTIVATIONS[activation]
+        layers: list[nn.Module] = []
         prev = in_dim
         for h in hidden:
-            layers += [nn.Linear(prev, h), nn.ReLU()]
+            layers += [nn.Linear(prev, h), make_activation()]
             prev = h
         layers.append(nn.Linear(prev, out_dim))
         self.net = nn.Sequential(*layers)
@@ -56,8 +76,6 @@ class HydraulicActuatorNet:
         model_meta.json, mlp_state_dict.pt, x_mean/std.npy, y_mean/std.npy
     device : torch device string, e.g. "cpu" or "cuda:0"
     """
-
-    N_JOINTS = 3  # boom, arm, bucket
 
     def __init__(
         self,
@@ -88,11 +106,33 @@ class HydraulicActuatorNet:
         self.target_mode: str = meta["target_mode"]
         self.device          = device
 
+        # Widths come from the metadata's column lists, so one class serves any
+        # joint group. Commands are counted separately from joints: a three-joint
+        # arm driven by four valve channels is a valid model.
+        self.joint_names: list[str] = list(meta["qdot_cols"])
+        self.position_names: list[str] = list(meta["q_cols"])
+        self.command_names: list[str] = list(meta["u_cols"])
+        self.num_joints: int = len(self.joint_names)
+        self.num_commands: int = len(self.command_names)
+
         in_dim: int      = meta["model"]["in_dim"]
         out_dim: int     = meta["model"]["out_dim"]
-        hidden: List[int] = meta["model"]["hidden"]
-        if meta["model"]["activation"] != "relu" or self.target_mode != "delta_velocity":
-            raise ValueError("Model must use ReLU and the delta_velocity target")
+        hidden: list[int] = meta["model"]["hidden"]
+        activation: str  = meta["model"]["activation"]
+        if self.target_mode != "delta_velocity":
+            raise ValueError(
+                f"Model target must be 'delta_velocity', got {self.target_mode!r}"
+            )
+        if len(self.position_names) != self.num_joints:
+            raise ValueError(
+                f"Model metadata lists {len(self.position_names)} position columns but "
+                f"{self.num_joints} velocity columns; position is integrated from velocity"
+            )
+        if out_dim != self.num_joints:
+            raise ValueError(
+                f"Model output width {out_dim} does not match its {self.num_joints} "
+                "velocity columns"
+            )
 
         self._x_mean = torch.from_numpy(np.load(model_dir / "x_mean.npy")).float().to(device)
         self._x_std  = torch.from_numpy(np.load(model_dir / "x_std.npy")).float().to(device)
@@ -105,7 +145,7 @@ class HydraulicActuatorNet:
                 f"x_mean has {self._x_mean.numel()}"
             )
 
-        self._model = MLP(in_dim, out_dim, hidden).to(device)
+        self._model = MLP(in_dim, out_dim, hidden, activation).to(device)
         weights_path = Path(weights) if weights is not None else model_dir / "mlp_state_dict.pt"
         state = torch.load(weights_path, map_location=device, weights_only=True)
         self._model.load_state_dict(state)
@@ -113,12 +153,12 @@ class HydraulicActuatorNet:
 
         # History ring-buffers (newest at index 0)
         # Buffers hold raw samples; every stride-th one becomes a network input tap.
-        self._q_buf = np.zeros((self.hist_q, self.N_JOINTS), dtype=np.float32)
+        self._q_buf = np.zeros((self.hist_q, self.num_joints), dtype=np.float32)
         self._qdot_buf = np.zeros(
-            ((self.hist_qdot - 1) * self.qdot_stride + 1, self.N_JOINTS), dtype=np.float32
+            ((self.hist_qdot - 1) * self.qdot_stride + 1, self.num_joints), dtype=np.float32
         )
         self._u_buf = np.zeros(
-            ((self.hist_u - 1) * self.u_stride + 1, self.N_JOINTS), dtype=np.float32
+            ((self.hist_u - 1) * self.u_stride + 1, self.num_commands), dtype=np.float32
         )
         # Zero is not a valid pose, so the position buffer is seeded from the first
         # observation rather than from reset(). Training pads history by repeating the
@@ -141,6 +181,21 @@ class HydraulicActuatorNet:
     # Public API
     # ------------------------------------------------------------------
 
+    def _as_channels(self, value, expected: int, name: str) -> np.ndarray:
+        """Coerce one argument to float32 and check its width.
+
+        Without this a wrongly sized argument broadcasts into the ring buffer and
+        the model quietly predicts nonsense; the joint count is exactly the thing
+        that varies between an arm model and a slew model.
+        """
+        array = np.asarray(value, dtype=np.float32).reshape(-1)
+        if array.shape[0] != expected:
+            raise ValueError(
+                f"{name} has {array.shape[0]} channels, expected {expected} "
+                f"({', '.join(self.joint_names if expected == self.num_joints else self.command_names)})"
+            )
+        return array
+
     def reset(self) -> None:
         """Clear history buffers. Call at the start of every episode."""
         self._qdot_buf[:] = 0.0
@@ -155,24 +210,26 @@ class HydraulicActuatorNet:
         u: np.ndarray,
     ) -> np.ndarray:
         """
-        Run one forward pass and return predicted joint velocity in rad/s [3].
+        Run one forward pass and return predicted joint velocity [rad/s].
 
         Updates history buffers with the current observed state.
 
         Parameters
         ----------
-        q_rad      : [3] current joint positions in radians
-        qdot_rad_s : [3] current joint velocities in rad/s
-        u          : [3] normalized valve commands in [-1, 1]
-                         order: [lift/boom, tilt/arm, tool/bucket]
+        q_rad      : [num_joints] current joint positions in radians
+        qdot_rad_s : [num_joints] current joint velocities in rad/s
+        u          : [num_commands] normalized valve commands in [-1, 1]
+
+        Channel order is the metadata's, exposed as :attr:`joint_names` and
+        :attr:`command_names`.
 
         Returns
         -------
-        qdot_pred_rad_s : [3] predicted joint velocities in rad/s
+        qdot_pred_rad_s : [num_joints] predicted joint velocities in rad/s
         """
-        q    = np.asarray(q_rad,      dtype=np.float32)
-        qdot = np.asarray(qdot_rad_s, dtype=np.float32)
-        u    = np.asarray(u,          dtype=np.float32)
+        q    = self._as_channels(q_rad,      self.num_joints,   "q_rad")
+        qdot = self._as_channels(qdot_rad_s, self.num_joints,   "qdot_rad_s")
+        u    = self._as_channels(u,          self.num_commands, "u")
 
         # Push newest readings into ring buffers
         if not self._q_primed:
@@ -187,7 +244,7 @@ class HydraulicActuatorNet:
         self._u_buf[0] = u
 
         # Build feature vector — must match build_supervised_xy ordering in train.py
-        feats: List[np.ndarray] = []
+        feats: list[np.ndarray] = []
         if self._has_q:
             feats.append(self._q_buf.flatten())                     # [hist_q * 3]
         if self.hist_qdot > 0:
@@ -226,7 +283,7 @@ class HydraulicActuatorNet:
         u: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Same as predict() but accepts and returns torch Tensors (shape [3]).
+        Same as predict() but accepts and returns torch Tensors ([num_joints]).
         """
         q_next = self.predict(
             q_rad.cpu().numpy(),
