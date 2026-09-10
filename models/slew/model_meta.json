@@ -1,0 +1,89 @@
+{
+  "dt": 0.01,
+  "target_mode": "delta_velocity",
+  "hist_q": 1,
+  "hist_qdot": 11,
+  "hist_u": 21,
+  "qdot_stride": 1,
+  "u_stride": 3,
+  "hist_q_sec": 0.0,
+  "hist_qdot_sec": 0.1,
+  "hist_u_sec": 0.6000000000000001,
+  "include_q": false,
+  "time_col": "timestamp",
+  "u_cols": [
+    "combined_cmd_rotate"
+  ],
+  "q_cols": [
+    "joint_pos_slew"
+  ],
+  "qdot_cols": [
+    "joint_vel_slew"
+  ],
+  "units": {
+    "timestamp_raw": "s",
+    "joint_position": "rad",
+    "joint_velocity": "rad/s",
+    "command": "normalized_-1_to_1"
+  },
+  "model": {
+    "hidden": [
+      32,
+      32
+    ],
+    "activation": "tanh",
+    "in_dim": 32,
+    "out_dim": 1,
+    "target": "delta_velocity"
+  },
+  "version": "Slew-V1",
+  "heading_invariant": true,
+  "simulation_joint_names": [
+    "revolute_carriage"
+  ],
+  "training": {
+    "candidate": {
+      "name": "tiny_delta",
+      "hidden": [
+        32,
+        32
+      ],
+      "velocity_sec": 0.1,
+      "command_sec": 0.6,
+      "target_mode": "delta_velocity",
+      "activation": "tanh",
+      "seed": 901
+    },
+    "label": "fused",
+    "test_seen": false,
+    "train_manifest_sha256": "c67652ae094c2e1d68d3399202220ea8fdeb37a9fe522dd47589dac8362713c8",
+    "dev_manifest_sha256": "a31b1af354a5cb1381ac9385d17d1267e6438d6a37c73f55ba033eb49850d06d",
+    "normalization": "training windows only",
+    "selection": "development rollout and rest",
+    "epochs": 100,
+    "rollout_steps": 400,
+    "rollout_horizon": 100,
+    "selected": {
+      "phase": "rollout",
+      "step": 100,
+      "loss": 0.08628648519515991,
+      "elapsed_s": 45.013469800000166,
+      "finite": true,
+      "path_mae_rad": 0.05622585862874985,
+      "velocity_rmse_rad_s": 0.07120902091264725,
+      "rest_10s_drift_rad": 0.060018740594387054,
+      "rest_final_speed_rad_s": 0.006103679072111845,
+      "peak_speed_rad_s": 0.5560930371284485,
+      "endpoint_1s_rad": 0.0303502157330513,
+      "endpoint_5s_rad": 0.06052348017692566,
+      "endpoint_10s_rad": 0.053446993231773376,
+      "score_rad": 0.06984111107885838
+    },
+    "equilibrium_calibration": {
+      "parent": "training\\runs\\slew\\tiny_delta",
+      "method": "last-layer bias solves physical output at zero features = 0",
+      "uses_test_data": false,
+      "runtime_extra_operations": 0
+    }
+  }
+}

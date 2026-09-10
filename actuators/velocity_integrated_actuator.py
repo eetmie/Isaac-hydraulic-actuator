@@ -27,12 +27,14 @@ Notes:
   several seconds. The clamp is the anti-windup, not a speed limit.
 - This class leaves the articulation drive live and relies on it. That is the whole point
   of the "target" route: PhysX's PD is the thing doing the work.
+- Optional velocity feedforward synchronizes the PD's desired velocity with its position
+  increment. ``reference_velocity`` also supports a learned reference generator independent
+  of physical tracking error, without bypassing the actual articulation dynamics.
 """
 
 from __future__ import annotations
 
 import torch
-
 from isaaclab.utils import configclass
 
 from .integrating_actuator_base import IntegratingActuatorBase, IntegratingActuatorCfg
@@ -42,7 +44,20 @@ from .integrating_actuator_base import IntegratingActuatorBase, IntegratingActua
 class VelocityIntegratedActuatorCfg(IntegratingActuatorCfg):
     """Configuration for :class:`VelocityIntegratedActuator`."""
 
-    pass
+    velocity_feedforward: bool = False
+    """Also send the accepted setpoint velocity [rad/s] to the PD drive.
+
+    Opt-in preserves legacy position-only behavior. Velocity is derived after
+    limit clamping so the drive does not push outward at an end stop.
+    """
+
+    continuous: bool = False
+    """Use circular PD position error for unlimited revolute joints.
+
+    The learned reference remains unwrapped [rad]. Only the position handed to
+    the drive is represented near the measured angle, whose coordinate may wrap.
+    Set this only for groups containing exclusively unlimited revolute joints.
+    """
 
 
 class VelocityIntegratedActuator(IntegratingActuatorBase):
@@ -60,31 +75,64 @@ class VelocityIntegratedActuator(IntegratingActuatorBase):
         """
         super().__init__(cfg, **kwargs)
         self._target_position = self._current_joint_pos()
+        self._target_velocity = torch.zeros_like(self._target_position)
+        self._reference_velocity = self._current_joint_vel()
 
     def reset(self) -> None:
         """Reset target positions to current joint positions."""
         self._target_position = self._current_joint_pos()
+        self._target_velocity = torch.zeros_like(self._target_position)
+        self._reference_velocity = self._current_joint_vel()
+        if self.cfg.velocity_feedforward:
+            self.robot.set_joint_velocity_target_index(target=self._target_velocity, joint_ids=self.joint_ids)
 
     def apply_velocity_command(self, velocity_commands: torch.Tensor) -> None:
         """Integrate velocity commands and send joint position targets to the robot.
 
         Args:
             velocity_commands: Shape (num_envs, num_joints), desired joint
-                velocities in joint-space units per second.
+                velocities [rad/s].
         """
         self._validate(velocity_commands)
 
         # Integrate v*dt into target positions, then apply the anti-windup clamp
         # so the setpoint stays inside the reachable range (see module docstring).
-        self._target_position = self._clamp(self._target_position + velocity_commands * self.sim_dt)
+        previous_position = self._target_position
+        proposed_position = previous_position + velocity_commands * self.sim_dt
+        self._target_position = self._clamp(proposed_position)
+        self._target_velocity = (self._target_position - previous_position) / self.sim_dt
+        self._reference_velocity = torch.where(
+            proposed_position != self._target_position, torch.zeros_like(velocity_commands), velocity_commands
+        )
 
         # Send position targets to robot PD controller
-        self.robot.set_joint_position_target_index(target=self._target_position, joint_ids=self.joint_ids)
+        drive_position = self._target_position
+        if self.cfg.continuous:
+            measured = self._current_joint_pos()
+            error = self._target_position - measured
+            drive_position = measured + torch.atan2(torch.sin(error), torch.cos(error))
+        self.robot.set_joint_position_target_index(target=drive_position, joint_ids=self.joint_ids)
+        if self.cfg.velocity_feedforward:
+            self.robot.set_joint_velocity_target_index(target=self._target_velocity, joint_ids=self.joint_ids)
 
     @property
     def target_position(self) -> torch.Tensor:
-        """The integrated position setpoint currently handed to the PD drive [rad]."""
+        """Integrated reference position [rad], unwrapped for continuous joints."""
         return self._target_position
+
+    @property
+    def target_velocity(self) -> torch.Tensor:
+        """Accepted velocity after position-limit clamping [rad/s]."""
+        return self._target_velocity
+
+    @property
+    def reference_velocity(self) -> torch.Tensor:
+        """Model reference velocity [rad/s], stopped when a position limit clips.
+
+        This follows DirectIntegrationActuator's reference-state convention.
+        It differs from the accepted one-step PD increment when a limit is hit.
+        """
+        return self._reference_velocity
 
 
 __all__ = ["VelocityIntegratedActuator", "VelocityIntegratedActuatorCfg"]

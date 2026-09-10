@@ -7,9 +7,9 @@ absolute velocity is reconstructed as ``qdot(t) + delta_qdot``.
 
 Nothing here is fixed to one machine. ``--q-cols`` / ``--qdot-cols`` / ``--u-cols``
 set the input and output widths, ``--hidden`` and ``--activation`` set the
-architecture, and the ``*-history-sec`` flags set the window. The defaults
-reproduce the shipped three-joint excavator arm model exactly, and a one-joint
-slew model is the same command with single-entry column lists.
+architecture, and the ``*-history-sec`` flags set the window. Defaults provide
+a three-joint baseline. The shipped V4 and slew models were selected through
+separate recurrent fine-tuning experiments; this is the reusable base trainer.
 
 ``mlp_state_dict.pt`` is the checkpoint with the best held-out *rollout* position
 error, not the last epoch and not the best one-step loss -- see rollout.py. The
@@ -30,23 +30,25 @@ RPM and oil temperature are not inputs.
 
 from __future__ import annotations
 
+import json
+import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
-import json
-import time
 
+import lerobot_source
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-
 from dataset import (
     ACTIVATIONS,
     MLP,
-    QDOT_COLS,
     Q_COLS,
+    QDOT_COLS,
     TARGET_MODE,
+    TARGET_MODES,
     TIME_COL,
     U_COLS,
     ModelSpec,
@@ -56,7 +58,6 @@ from dataset import (
     resolve_csvs,
     resolve_dataset_dir,
 )
-import lerobot_source
 from rollout import RolloutScorer, make_starts
 from splits import (
     recording_id,
@@ -141,7 +142,7 @@ def train(
             # Accumulate on-device: loss.item() here would sync once per step.
             running = torch.zeros((), device=device)
             for s in range(0, n_train, step):
-                idx = perm[s:s + step]
+                idx = perm[s : s + step]
                 loss = loss_fn(model(X_train[idx]), y_train[idx])
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
@@ -164,9 +165,7 @@ def train(
             if is_best:
                 best_score, best_epoch = candidate, ep
                 best_metrics = {"val": va_loss, "rollout": roll}
-                best_state = {
-                    k: v.detach().to("cpu").clone() for k, v in model.state_dict().items()
-                }
+                best_state = {k: v.detach().to("cpu").clone() for k, v in model.state_dict().items()}
 
             if checkpoint_every > 0 and ep % checkpoint_every == 0:
                 if checkpoint_dir is None:
@@ -230,6 +229,7 @@ def main(
     time_col: str = TIME_COL,
     hidden: Sequence[int] = (128, 128, 128),
     activation: str = "relu",
+    target_mode: str = TARGET_MODE,
     device: str = "auto",
 ):
     out = resolve_out_dir(out_dir)
@@ -278,6 +278,7 @@ def main(
         time_col=time_col,
     )
     arch = ModelSpec(hidden=tuple(hidden), activation=activation)
+    spec = replace(spec, target_mode=target_mode)
 
     pool = build_pool(source_files, spec, "pool", loader=loader)
     if split == "session":
@@ -350,10 +351,12 @@ def main(
     )
     print(
         f"Split: {split_info['split']}, "
-        + (f"{split_info['n_sessions']} sessions, {split_info['n_val_sessions']} to validation"
-           if split == "session" else
-           f"{split_info['n_snippets']} snippets of {snippet_sec:g}s, "
-           f"{split_info['n_val_snippets']} to validation")
+        + (
+            f"{split_info['n_sessions']} sessions, {split_info['n_val_sessions']} to validation"
+            if split == "session"
+            else f"{split_info['n_snippets']} snippets of {snippet_sec:g}s, "
+            f"{split_info['n_val_snippets']} to validation"
+        )
         + f" (seed {split_seed}); train={split_info['train_windows']}, "
         f"val={split_info['val_windows']} "
         f"({100.0 * split_info['actual_val_window_fraction']:.1f}% of windows), "
@@ -361,13 +364,10 @@ def main(
     )
     if split == "session":
         print(f"Validation sessions: {', '.join(split_info['validation_sessions'])}")
-    print(
-        f"Channels: {spec.n_q} joints {list(spec.qdot_cols)}, "
-        f"{spec.n_u} commands {list(spec.u_cols)}"
-    )
+    print(f"Channels: {spec.n_q} joints {list(spec.qdot_cols)}, {spec.n_u} commands {list(spec.u_cols)}")
     print(
         f"Model: hidden={list(arch.hidden)}, activation={arch.activation}, "
-        f"in_dim={spec.in_dim}, out_dim={spec.out_dim}, target={TARGET_MODE}, "
+        f"in_dim={spec.in_dim}, out_dim={spec.out_dim}, target={spec.target_mode}, "
         f"lr={lr}, weight_decay={weight_decay}"
     )
     print(
@@ -390,14 +390,26 @@ def main(
     print(f"Resident on {dev}: {resident / 1e6:.0f} MB\n")
 
     scorer = RolloutScorer(
-        spec, pool.q, pool.qdot, pool.u, starts, horizon,
-        xnorm.mean, xnorm.std, ynorm.mean, ynorm.std, dev,
+        spec,
+        pool.q,
+        pool.qdot,
+        pool.u,
+        starts,
+        horizon,
+        xnorm.mean,
+        xnorm.std,
+        ynorm.mean,
+        ynorm.std,
+        dev,
     )
 
     model = MLP(spec.in_dim, spec.out_dim, arch.hidden, arch.activation)
     best_state, best_epoch, best_metrics, history = train(
         model,
-        Xtr, ytr, Xva, yva,
+        Xtr,
+        ytr,
+        Xva,
+        yva,
         epochs=epochs,
         batch_size=batch_size,
         lr=lr,
@@ -420,8 +432,7 @@ def main(
 
     hist_df = pd.DataFrame(history)
     hist_df.to_csv(out / "train_history.csv", index=False)
-    print(f"Saved training history to {out / 'train_history.csv'} "
-          f"({len(history)} epochs)")
+    print(f"Saved training history to {out / 'train_history.csv'} ({len(history)} epochs)")
 
     meta = spec.to_meta(arch)
     meta["training"] = {
@@ -452,8 +463,15 @@ def main(
     print(
         f"\nDeployable model written to {out}:\n  "
         + "\n  ".join(
-             ["mlp_state_dict.pt", "model_meta.json", "split_manifest.json",
-              "x_mean.npy", "x_std.npy", "y_mean.npy", "y_std.npy"]
+            [
+                "mlp_state_dict.pt",
+                "model_meta.json",
+                "split_manifest.json",
+                "x_mean.npy",
+                "x_std.npy",
+                "y_mean.npy",
+                "y_std.npy",
+            ]
         )
     )
 
@@ -470,7 +488,7 @@ if __name__ == "__main__":
 
     p = argparse.ArgumentParser(
         description="Train a hydraulic actuator forward model. Defaults reproduce "
-                    "the shipped three-joint excavator arm model.",
+        "the shipped three-joint excavator arm model.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -479,61 +497,74 @@ if __name__ == "__main__":
     source.add_argument(
         "--csv",
         help="Training CSV file, directory, or glob. Relative paths are tried "
-             "against the working directory, then training/, then the repo root.",
+        "against the working directory, then training/, then the repo root.",
     )
     source.add_argument(
         "--lerobot",
         help="Root of a LeRobot v3.0 dataset (the directory holding meta/ and "
-             "data/). Channel names in --q-cols/--qdot-cols/--u-cols are matched "
-             "against the element names in meta/info.json, so they can name slots "
-             "inside observation.state / action. The dataset must already carry "
-             "velocity; this does not differentiate position for you.",
+        "data/). Channel names in --q-cols/--qdot-cols/--u-cols are matched "
+        "against the element names in meta/info.json, so they can name slots "
+        "inside observation.state / action. The dataset must already carry "
+        "velocity; this does not differentiate position for you.",
     )
     io.add_argument(
-        "--out", default=None,
+        "--out",
+        default=None,
         help="Run directory; relative paths are resolved against this script. "
-             "Defaults to a fresh runs/<timestamp>, never the deployed model/.",
+        "Defaults to a fresh runs/<timestamp>, never the deployed model/.",
     )
     io.add_argument("--device", default="auto", help="auto | cpu | cuda | cuda:0")
 
     opt = p.add_argument_group("optimization")
     opt.add_argument("--epochs", type=int, default=1800, help="Fixed epoch budget; always runs fully")
     opt.add_argument("--batch-size", type=int, default=1024, help="Minibatch size; 0 = full batch")
-    opt.add_argument("--lr", type=float, default=1e-4, help="Largest observed effect; lower needs more epochs")
+    opt.add_argument(
+        "--lr", type=float, default=1e-4, help="Largest observed effect; lower needs more epochs"
+    )
     opt.add_argument("--weight-decay", type=float, default=1e-4)
     opt.add_argument("--seed", type=int, default=0, help="Weight-init seed")
     opt.add_argument(
-        "--checkpoint-every", type=int, default=0,
+        "--checkpoint-every",
+        type=int,
+        default=0,
         help="Save weights every N epochs (not steps); 0 disables. Needed to "
-             "compare intermediate epochs after the fact -- the shipped and "
-             "final weights alone cannot reconstruct the trajectory.",
+        "compare intermediate epochs after the fact -- the shipped and "
+        "final weights alone cannot reconstruct the trajectory.",
     )
 
     sp = p.add_argument_group("train/validation split")
     sp.add_argument(
-        "--split", default="session", choices=["session", "snippet"],
+        "--split",
+        default="session",
+        choices=["session", "snippet"],
         help="session: hold out whole drives -- honest generalization measurement. "
-             "snippet: hold out contiguous snippets from every drive -- keeps all "
-             "sessions in training, which measured stronger on the external benchmark.",
+        "snippet: hold out contiguous snippets from every drive -- keeps all "
+        "sessions in training, which measured stronger on the external benchmark.",
     )
     sp.add_argument("--val-fraction", type=float, default=0.10)
     sp.add_argument(
-        "--split-seed", type=int, default=0,
+        "--split-seed",
+        type=int,
+        default=0,
         help="Kept separate from --seed so a weight-init sweep does not silently "
-             "re-split the data (which would also refit the normalizers)",
+        "re-split the data (which would also refit the normalizers)",
     )
     sp.add_argument(
-        "--snippet-sec", type=float, default=10.0,
+        "--snippet-sec",
+        type=float,
+        default=10.0,
         help="Snippet length for --split snippet. Shorter costs more to the "
-             "leakage buffer: roughly 2*val_fraction*history/snippet_len.",
+        "leakage buffer: roughly 2*val_fraction*history/snippet_len.",
     )
 
     ro = p.add_argument_group("checkpoint selection (free-running rollout)")
     ro.add_argument(
-        "--select-on", default="rollout", choices=["rollout", "val"],
+        "--select-on",
+        default="rollout",
+        choices=["rollout", "val"],
         help="Selection metric: free-running position error, or one-step MSE. "
-             "At 100 Hz one-step MSE mis-ranks free-running models -- 'val' is "
-             "kept mainly so that result stays reproducible.",
+        "At 100 Hz one-step MSE mis-ranks free-running models -- 'val' is "
+        "kept mainly so that result stays reproducible.",
     )
     ro.add_argument("--rollout-every", type=int, default=5, help="Score rollouts every N epochs")
     ro.add_argument("--rollout-horizon-sec", type=float, default=5.0)
@@ -541,51 +572,79 @@ if __name__ == "__main__":
 
     arch = p.add_argument_group("model architecture")
     arch.add_argument(
-        "--hidden", type=int, nargs="+", default=[128, 128, 128], metavar="WIDTH",
+        "--target_mode",
+        choices=TARGET_MODES,
+        default=TARGET_MODE,
+        help="Predict a velocity increment (legacy default) or absolute next velocity",
+    )
+    arch.add_argument(
+        "--hidden",
+        type=int,
+        nargs="+",
+        default=[128, 128, 128],
+        metavar="WIDTH",
         help="Hidden layer widths; the count of values is the number of layers",
     )
     arch.add_argument(
-        "--activation", default="relu", choices=sorted(ACTIVATIONS),
+        "--activation",
+        default="relu",
+        choices=sorted(ACTIVATIONS),
         help="Hidden-layer activation. Both are parameterless, so this does not "
-             "change the state_dict key layout the sim side loads",
+        "change the state_dict key layout the sim side loads",
     )
 
     ch = p.add_argument_group("input/output channels")
     ch.add_argument(
-        "--q-cols", nargs="+", default=list(Q_COLS), metavar="COL",
-        help="Joint-position columns. Their count is the joint count, and hence "
-             "part of the input width",
+        "--q-cols",
+        nargs="+",
+        default=list(Q_COLS),
+        metavar="COL",
+        help="Joint-position columns. Their count is the joint count, and hence part of the input width",
     )
     ch.add_argument(
-        "--qdot-cols", nargs="+", default=list(QDOT_COLS), metavar="COL",
+        "--qdot-cols",
+        nargs="+",
+        default=list(QDOT_COLS),
+        metavar="COL",
         help="Joint-velocity columns; their count is also the OUTPUT width. Must "
-             "match --q-cols in length -- position is integrated from velocity",
+        "match --q-cols in length -- position is integrated from velocity",
     )
     ch.add_argument(
-        "--u-cols", nargs="+", default=list(U_COLS), metavar="COL",
+        "--u-cols",
+        nargs="+",
+        default=list(U_COLS),
+        metavar="COL",
         help="Command columns. Free of the joint count: three joints driven by "
-             "four valve channels is expressible",
+        "four valve channels is expressible",
     )
     ch.add_argument("--time-col", default=TIME_COL, help="Timestamp column")
 
     win = p.add_argument_group("input window geometry")
     win.add_argument(
-        "--dt", type=float, default=None,
+        "--dt",
+        type=float,
+        default=None,
         help="Control period in seconds. Defaults to 0.01 for --csv, and to 1/fps "
-             "from meta/info.json for --lerobot",
+        "from meta/info.json for --lerobot",
     )
     win.add_argument(
-        "--position-history-sec", type=float, default=0.0,
+        "--position-history-sec",
+        type=float,
+        default=0.0,
         help="Position history depth; 0 means the current position only",
     )
     win.add_argument("--velocity-history-sec", type=float, default=0.10)
     win.add_argument(
-        "--velocity-stride-sec", type=float, default=0.01,
+        "--velocity-stride-sec",
+        type=float,
+        default=0.01,
         help="Spacing between velocity history taps",
     )
     win.add_argument("--command-history-sec", type=float, default=0.99)
     win.add_argument(
-        "--command-stride-sec", type=float, default=0.03,
+        "--command-stride-sec",
+        type=float,
+        default=0.03,
         help="Spacing between command history taps, not a normalization knob",
     )
 
@@ -621,5 +680,6 @@ if __name__ == "__main__":
         time_col=args.time_col,
         hidden=args.hidden,
         activation=args.activation,
+        target_mode=args.target_mode,
         device=args.device,
     )

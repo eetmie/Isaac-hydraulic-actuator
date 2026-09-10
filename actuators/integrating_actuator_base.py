@@ -21,7 +21,6 @@ import re
 from dataclasses import MISSING
 
 import torch
-
 from isaaclab.scene import InteractiveScene
 from isaaclab.utils import configclass
 
@@ -84,7 +83,9 @@ class IntegratingActuatorBase:
         # Isaac Lab 3.0 returns ProxyArray from every ``.data`` property; ``.torch``
         # is the zero-copy torch view, so clone before holding on to a slice.
         if self.clamp_to_limits:
-            self._joint_pos_limits = self.robot.data.soft_joint_pos_limits.torch[:, self._joint_ids, :].clone()
+            self._joint_pos_limits = self.robot.data.soft_joint_pos_limits.torch[
+                :, self._joint_ids, :
+            ].clone()
         else:
             self._joint_pos_limits = None
 

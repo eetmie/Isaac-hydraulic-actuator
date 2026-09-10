@@ -31,7 +31,6 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-
 _PREPARED_SUFFIX = re.compile(r"(?:_seg\d+)?_chunk\d+$")
 _WALL_CLOCK = re.compile(r"\d{8}_\d{6}")
 
@@ -45,6 +44,7 @@ def recording_id(name: str) -> str:
 # ----------------------------------------------------------------------------
 # Session grouping
 # ----------------------------------------------------------------------------
+
 
 def _start_time(recording: str) -> Optional[float]:
     """Seconds since the epoch for the logger's ``YYYYMMDD_HHMMSS`` stamp.
@@ -123,6 +123,7 @@ def session_ids(
 # ----------------------------------------------------------------------------
 # Whole-group split
 # ----------------------------------------------------------------------------
+
 
 def train_val_indices(
     counts: Sequence[int],
@@ -222,9 +223,9 @@ def train_val_indices(
 class Snippet:
     """A contiguous run of windows in the pool's global index space."""
 
-    start: int              # inclusive
-    stop: int               # exclusive
-    first_in_chunk: bool    # no predecessor in time -> never needs a buffer
+    start: int  # inclusive
+    stop: int  # exclusive
+    first_in_chunk: bool  # no predecessor in time -> never needs a buffer
 
     def __len__(self) -> int:
         return self.stop - self.start
@@ -283,7 +284,7 @@ def gather_indices(
         crosses_label = not s.first_in_chunk and is_val[k] != is_val[k - 1]
         start = s.start + (buffer if crosses_label else 0)
         if start >= s.stop:
-            continue                       # snippet shorter than the buffer
+            continue  # snippet shorter than the buffer
         idx = np.arange(start, s.stop)
         if is_val[k]:
             val.append(idx)

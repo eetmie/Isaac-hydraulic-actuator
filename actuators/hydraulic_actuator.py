@@ -42,9 +42,7 @@ class MLP(nn.Module):
     def __init__(self, in_dim: int, out_dim: int, hidden: Sequence[int], activation: str = "relu"):
         super().__init__()
         if activation not in ACTIVATIONS:
-            raise ValueError(
-                f"Unknown activation {activation!r}; expected one of {sorted(ACTIVATIONS)}"
-            )
+            raise ValueError(f"Unknown activation {activation!r}; expected one of {sorted(ACTIVATIONS)}")
         make_activation = ACTIVATIONS[activation]
         layers: list[nn.Module] = []
         prev = in_dim
@@ -96,15 +94,15 @@ class HydraulicActuatorNet:
         with open(model_dir / "model_meta.json", encoding="utf-8") as f:
             meta = json.load(f)
 
-        self.dt: float       = meta["dt"]
-        self.hist_q: int     = meta["hist_q"]
+        self.dt: float = meta["dt"]
+        self.hist_q: int = meta["hist_q"]
         self.qdot_stride: int = meta["qdot_stride"]
-        self.u_stride: int    = meta["u_stride"]
-        self.hist_qdot: int  = meta["hist_qdot"]
-        self.hist_u: int     = meta["hist_u"]
-        self._has_q: bool    = meta["include_q"]
+        self.u_stride: int = meta["u_stride"]
+        self.hist_qdot: int = meta["hist_qdot"]
+        self.hist_u: int = meta["hist_u"]
+        self._has_q: bool = meta["include_q"]
         self.target_mode: str = meta["target_mode"]
-        self.device          = device
+        self.device = device
 
         # Widths come from the metadata's column lists, so one class serves any
         # joint group. Commands are counted separately from joints: a three-joint
@@ -115,14 +113,12 @@ class HydraulicActuatorNet:
         self.num_joints: int = len(self.joint_names)
         self.num_commands: int = len(self.command_names)
 
-        in_dim: int      = meta["model"]["in_dim"]
-        out_dim: int     = meta["model"]["out_dim"]
+        in_dim: int = meta["model"]["in_dim"]
+        out_dim: int = meta["model"]["out_dim"]
         hidden: list[int] = meta["model"]["hidden"]
-        activation: str  = meta["model"]["activation"]
-        if self.target_mode != "delta_velocity":
-            raise ValueError(
-                f"Model target must be 'delta_velocity', got {self.target_mode!r}"
-            )
+        activation: str = meta["model"]["activation"]
+        if self.target_mode not in ("delta_velocity", "velocity"):
+            raise ValueError(f"Model target must be 'delta_velocity' or 'velocity', got {self.target_mode!r}")
         if len(self.position_names) != self.num_joints:
             raise ValueError(
                 f"Model metadata lists {len(self.position_names)} position columns but "
@@ -130,19 +126,17 @@ class HydraulicActuatorNet:
             )
         if out_dim != self.num_joints:
             raise ValueError(
-                f"Model output width {out_dim} does not match its {self.num_joints} "
-                "velocity columns"
+                f"Model output width {out_dim} does not match its {self.num_joints} velocity columns"
             )
 
         self._x_mean = torch.from_numpy(np.load(model_dir / "x_mean.npy")).float().to(device)
-        self._x_std  = torch.from_numpy(np.load(model_dir / "x_std.npy")).float().to(device)
+        self._x_std = torch.from_numpy(np.load(model_dir / "x_std.npy")).float().to(device)
         self._y_mean = torch.from_numpy(np.load(model_dir / "y_mean.npy")).float().to(device)
-        self._y_std  = torch.from_numpy(np.load(model_dir / "y_std.npy")).float().to(device)
+        self._y_std = torch.from_numpy(np.load(model_dir / "y_std.npy")).float().to(device)
 
         if self._x_mean.numel() != in_dim:
             raise ValueError(
-                f"Normalizer input dim mismatch: model expects {in_dim}, "
-                f"x_mean has {self._x_mean.numel()}"
+                f"Normalizer input dim mismatch: model expects {in_dim}, x_mean has {self._x_mean.numel()}"
             )
 
         self._model = MLP(in_dim, out_dim, hidden, activation).to(device)
@@ -157,9 +151,7 @@ class HydraulicActuatorNet:
         self._qdot_buf = np.zeros(
             ((self.hist_qdot - 1) * self.qdot_stride + 1, self.num_joints), dtype=np.float32
         )
-        self._u_buf = np.zeros(
-            ((self.hist_u - 1) * self.u_stride + 1, self.num_commands), dtype=np.float32
-        )
+        self._u_buf = np.zeros(((self.hist_u - 1) * self.u_stride + 1, self.num_commands), dtype=np.float32)
         # Zero is not a valid pose, so the position buffer is seeded from the first
         # observation rather than from reset(). Training pads history by repeating the
         # first row (see make_history_matrix), so this matches what the net saw.
@@ -173,7 +165,7 @@ class HydraulicActuatorNet:
                 f"HydraulicActuatorNet timestep mismatch: model dt={self.dt}s, "
                 f"controller dt={float(sim_dt)}s ({ratio:.2g}x). "
                 f"The model's velocity and command histories would be stretched to "
-                f"{qdot_tap*ratio*1000:.0f}/{u_tap*ratio*1000:.0f} ms taps. "
+                f"{qdot_tap * ratio * 1000:.0f}/{u_tap * ratio * 1000:.0f} ms taps. "
                 "Match the simulator control period to the model metadata."
             )
 
@@ -227,13 +219,13 @@ class HydraulicActuatorNet:
         -------
         qdot_pred_rad_s : [num_joints] predicted joint velocities in rad/s
         """
-        q    = self._as_channels(q_rad,      self.num_joints,   "q_rad")
-        qdot = self._as_channels(qdot_rad_s, self.num_joints,   "qdot_rad_s")
-        u    = self._as_channels(u,          self.num_commands, "u")
+        q = self._as_channels(q_rad, self.num_joints, "q_rad")
+        qdot = self._as_channels(qdot_rad_s, self.num_joints, "qdot_rad_s")
+        u = self._as_channels(u, self.num_commands, "u")
 
         # Push newest readings into ring buffers
         if not self._q_primed:
-            self._q_buf[:] = q            # repeat first observation, as training pads
+            self._q_buf[:] = q  # repeat first observation, as training pads
             self._q_primed = True
         else:
             self._q_buf = np.roll(self._q_buf, shift=1, axis=0)
@@ -246,22 +238,22 @@ class HydraulicActuatorNet:
         # Build feature vector — must match build_supervised_xy ordering in train.py
         feats: list[np.ndarray] = []
         if self._has_q:
-            feats.append(self._q_buf.flatten())                     # [hist_q * 3]
+            feats.append(self._q_buf.flatten())  # [hist_q * 3]
         if self.hist_qdot > 0:
-            feats.append(self._qdot_buf[::self.qdot_stride].flatten())
-        feats.append(self._u_buf[::self.u_stride].flatten())
+            feats.append(self._qdot_buf[:: self.qdot_stride].flatten())
+        feats.append(self._u_buf[:: self.u_stride].flatten())
 
         x = np.concatenate(feats)
         if x.shape[0] != self._x_mean.numel():
             raise ValueError(f"Input dim mismatch: built {x.shape[0]}, model expects {self._x_mean.numel()}")
 
         with torch.no_grad():
-            x_t    = torch.from_numpy(x).unsqueeze(0).to(self.device)
+            x_t = torch.from_numpy(x).unsqueeze(0).to(self.device)
             x_norm = (x_t - self._x_mean) / self._x_std
             y_norm = self._model(x_norm)
             model_output = (y_norm * self._y_std + self._y_mean).squeeze(0).cpu().numpy()
 
-        return qdot + model_output
+        return qdot + model_output if self.target_mode == "delta_velocity" else model_output
 
     def predict(
         self,

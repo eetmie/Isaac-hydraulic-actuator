@@ -36,7 +36,6 @@ call :meth:`sync_to_sim` afterwards to stop it being integrated twice.
 from __future__ import annotations
 
 import torch
-
 from isaaclab.utils import configclass
 
 from .integrating_actuator_base import IntegratingActuatorBase, IntegratingActuatorCfg

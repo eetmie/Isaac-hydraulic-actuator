@@ -45,7 +45,6 @@ from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
-
 from dataset import Chunk, WindowSpec
 
 SUPPORTED_CODEBASE_VERSION = "v3.0"
@@ -185,9 +184,7 @@ def resolve_channel(info: Dict, name: str) -> Tuple[str, int]:
             element_names = _element_names(features[key])
             if channel in element_names:
                 return key, element_names.index(channel)
-            raise KeyError(
-                f"feature {key!r} has no channel {channel!r}; it names {element_names}"
-            )
+            raise KeyError(f"feature {key!r} has no channel {channel!r}; it names {element_names}")
 
     # Bare element name, or the key of a scalar feature.
     matches: List[Tuple[str, int]] = []
@@ -317,9 +314,7 @@ def load_lerobot_chunks(root: Path, spec: WindowSpec) -> List[Chunk]:
         u_all = _gather(table, u_channels)
 
         if np.isfinite(u_all).any() and np.nanmax(np.abs(u_all)) > 1.001:
-            raise ValueError(
-                f"{path.name} contains commands outside [-1, 1]; normalize them before training"
-            )
+            raise ValueError(f"{path.name} contains commands outside [-1, 1]; normalize them before training")
         if np.isfinite(q_all).any() and np.nanmax(np.abs(q_all)) > 2.0 * np.pi:
             print(
                 f"[WARN] {path.name}: joint positions reach "
@@ -338,9 +333,7 @@ def load_lerobot_chunks(root: Path, spec: WindowSpec) -> List[Chunk]:
                     continue
                 values = np.concatenate([q_all[lo:hi], qdot_all[lo:hi], u_all[lo:hi]], axis=1)
                 if not np.isfinite(values).all():
-                    raise ValueError(
-                        f"{path.name} episode {int(episodes[lo])} has non-finite samples"
-                    )
+                    raise ValueError(f"{path.name} episode {int(episodes[lo])} has non-finite samples")
                 out.append(
                     Chunk(
                         name=f"episode_{int(episodes[lo]):06d}#{len(out)}",
@@ -364,7 +357,9 @@ def _runs(values: np.ndarray) -> List[Tuple[int, int]]:
     return [(int(a), int(b)) for a, b in zip(bounds[:-1], bounds[1:])]
 
 
-def _split_on_time_gaps(timestamps: np.ndarray, dt: float, max_gap_factor: float = 3.0) -> List[Tuple[int, int]]:
+def _split_on_time_gaps(
+    timestamps: np.ndarray, dt: float, max_gap_factor: float = 3.0
+) -> List[Tuple[int, int]]:
     """Break one episode wherever its timestamps stop being dt apart.
 
     LeRobot computes ``timestamp`` as ``frame_index / fps``, so this is normally

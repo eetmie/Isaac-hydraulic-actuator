@@ -1,0 +1,84 @@
+{
+  "source": "training\\runs\\v4\\long",
+  "new_test_seen": false,
+  "result": {
+    "name": "long",
+    "best_step": 1000,
+    "best_score": 3.6618687365204097,
+    "steps": 6000,
+    "elapsed_s": 891.3040900000051,
+    "initial": {
+      "finite": true,
+      "score": 3.749489648453891,
+      "rest_10s_deg": 0.3278104066848755,
+      "rest_pitch_deg": 0.0089286332949996,
+      "new": {
+        "path_deg": 1.8619492053985596,
+        "endpoint_10s_deg": 2.8834614753723145,
+        "per_joint_10s_deg": [
+          1.6622905731201172,
+          2.918499231338501,
+          4.0695953369140625
+        ],
+        "pitch_mae_deg": 0.026018250733613968,
+        "pitch_velocity_rmse_deg_s": 0.8142671585083008
+      },
+      "legacy": {
+        "path_deg": 3.0780985355377197,
+        "endpoint_10s_deg": 5.0138139724731445,
+        "per_joint_10s_deg": [
+          2.419847011566162,
+          5.766485691070557,
+          6.855106830596924
+        ],
+        "pitch_mae_deg": 0.036831505596637726,
+        "pitch_velocity_rmse_deg_s": 0.534978449344635
+      }
+    },
+    "config": {
+      "mixture": true,
+      "label": "smooth21",
+      "lr": 1e-06,
+      "steps": 6000,
+      "seed": 901,
+      "horizon": 100,
+      "parent": "training\\runs\\v4\\transfer_mix"
+    },
+    "selected_metrics": {
+      "finite": true,
+      "score": 3.6618687365204097,
+      "rest_10s_deg": 0.2954263985157013,
+      "rest_pitch_deg": 0.008426429703831673,
+      "new": {
+        "path_deg": 1.8393405675888062,
+        "endpoint_10s_deg": 2.862823963165283,
+        "per_joint_10s_deg": [
+          1.7424153089523315,
+          2.942761182785034,
+          3.9032957553863525
+        ],
+        "pitch_mae_deg": 0.025630362331867218,
+        "pitch_velocity_rmse_deg_s": 0.8183941841125488
+      },
+      "legacy": {
+        "path_deg": 2.9192326068878174,
+        "endpoint_10s_deg": 4.708849906921387,
+        "per_joint_10s_deg": [
+          2.263032913208008,
+          5.608482837677002,
+          6.255035400390625
+        ],
+        "pitch_mae_deg": 0.03738736733794212,
+        "pitch_velocity_rmse_deg_s": 0.5348297953605652
+      }
+    }
+  },
+  "files": {
+    "mlp_state_dict.pt": "1df53aa7e9fb9b2ea91bbe6fecc4a0b4f569b4953e0eb8875353b5b83d5cf040",
+    "model_meta.json": "ba2722062df6e92f867954435e9859ae12309ddd93c7a459080e24d7f4afdb81",
+    "x_mean.npy": "d3c9b56e36d25275cbd2ae67f7045f37c2c898a9ffa718ae2d68549f7c3ca382",
+    "x_std.npy": "7bc3a90783b94256d6c187c2196d2c3c24147564802cf318c0db80e307b2281a",
+    "y_mean.npy": "ef5600c8f06d4a9e544671908da1919ad39a7d6b4d32343d9134e5bd45c5aa45",
+    "y_std.npy": "80a75bdaca7c582826cf2af3c00a425c57502f29f77f57e354b19756133537c2"
+  }
+}

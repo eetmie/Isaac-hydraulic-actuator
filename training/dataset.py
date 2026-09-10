@@ -27,11 +27,11 @@ rather than dropping rows in place.
 
 from __future__ import annotations
 
+import glob
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Tuple
-import glob
-import os
 
 import numpy as np
 import torch
@@ -71,7 +71,8 @@ Q_COLS = ("joint_pos_boom", "joint_pos_arm", "joint_pos_bucket")
 QDOT_COLS = ("joint_vel_boom", "joint_vel_arm", "joint_vel_bucket")
 
 TARGET_MODE = "delta_velocity"
-"""Not a knob: the delta reconstruction is wired into four rollout recurrences."""
+"""Backward-compatible default. V2 also compares absolute next velocity."""
+TARGET_MODES = ("delta_velocity", "velocity")
 
 ACTIVATIONS = {"relu": nn.ReLU, "tanh": nn.Tanh}
 """Selectable activations. Both are parameterless, so the nn.Sequential index
@@ -82,6 +83,7 @@ is identical whichever is chosen."""
 # ----------------------------------------------------------------------------
 # Window geometry
 # ----------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -97,9 +99,7 @@ class ModelSpec:
 
     def __post_init__(self) -> None:
         if self.activation not in ACTIVATIONS:
-            raise ValueError(
-                f"Unknown activation {self.activation!r}; expected one of {sorted(ACTIVATIONS)}"
-            )
+            raise ValueError(f"Unknown activation {self.activation!r}; expected one of {sorted(ACTIVATIONS)}")
         if not self.hidden or any(h <= 0 for h in self.hidden):
             raise ValueError(f"hidden must be a non-empty list of positive widths, got {self.hidden}")
 
@@ -129,16 +129,19 @@ class WindowSpec:
     qdot_cols: Tuple[str, ...] = QDOT_COLS
     u_cols: Tuple[str, ...] = U_COLS
     time_col: str = TIME_COL
-    dt: float = 0.01            # 100 Hz control period
-    hist_q: int = 1             # current position only
-    hist_qdot: int = 11         # t ... t-0.10 s at 100 Hz
-    hist_u: int = 34            # t ... t-0.99 s at 30 ms taps
+    dt: float = 0.01  # 100 Hz control period
+    hist_q: int = 1  # current position only
+    hist_qdot: int = 11  # t ... t-0.10 s at 100 Hz
+    hist_u: int = 34  # t ... t-0.99 s at 30 ms taps
     qdot_stride: int = 1
     u_stride: int = 3
     include_q: bool = True
+    target_mode: str = TARGET_MODE
 
     def __post_init__(self) -> None:
         # Tolerate lists from JSON / argparse so callers do not have to remember.
+        if self.target_mode not in TARGET_MODES:
+            raise ValueError(f"Unknown target mode {self.target_mode!r}; expected {TARGET_MODES}")
         for name in ("q_cols", "qdot_cols", "u_cols"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         if self.n_q != self.n_qdot:
@@ -252,11 +255,8 @@ class WindowSpec:
     @classmethod
     def from_meta(cls, meta: Dict) -> "WindowSpec":
         """Read a spec back out of a model_meta.json payload."""
-        if meta["target_mode"] != TARGET_MODE:
-            raise ValueError(
-                f"Model target must be {TARGET_MODE!r}, got {meta['target_mode']!r}"
-            )
         return cls(
+            target_mode=meta["target_mode"],
             q_cols=tuple(meta["q_cols"]),
             qdot_cols=tuple(meta["qdot_cols"]),
             u_cols=tuple(meta["u_cols"]),
@@ -284,7 +284,7 @@ class WindowSpec:
         model_spec = ModelSpec() if model_spec is None else model_spec
         return {
             "dt": self.dt,
-            "target_mode": TARGET_MODE,
+            "target_mode": self.target_mode,
             "hist_q": self.hist_q,
             "hist_qdot": self.hist_qdot,
             "hist_u": self.hist_u,
@@ -309,7 +309,7 @@ class WindowSpec:
                 "activation": model_spec.activation,
                 "in_dim": self.in_dim,
                 "out_dim": self.out_dim,
-                "target": TARGET_MODE,
+                "target": self.target_mode,
             },
         }
 
@@ -317,6 +317,7 @@ class WindowSpec:
 # ----------------------------------------------------------------------------
 # Feature construction
 # ----------------------------------------------------------------------------
+
 
 def make_history_matrix(arr: np.ndarray, hist: int, stride: int = 1) -> np.ndarray:
     """Stack history taps (t, t-stride, ..., t-(hist-1)*stride) of ``arr`` [T, D].
@@ -329,7 +330,7 @@ def make_history_matrix(arr: np.ndarray, hist: int, stride: int = 1) -> np.ndarr
     out = np.zeros((T, D * hist), dtype=np.float32)
     for k in range(hist):
         src_idx = np.clip(np.arange(T) - k * stride, 0, T - 1)
-        out[:, k * D:(k + 1) * D] = arr[src_idx, :]
+        out[:, k * D : (k + 1) * D] = arr[src_idx, :]
     return out
 
 
@@ -358,13 +359,16 @@ def build_windows(
     are dropped.
     """
     X_all = build_features(q, qdot, u, spec)
-    y_all = np.roll(qdot, shift=-1, axis=0) - qdot
-    return X_all[spec.warmup:-1, :], y_all[spec.warmup:-1, :]
+    y_all = np.roll(qdot, shift=-1, axis=0)
+    if spec.target_mode == "delta_velocity":
+        y_all = y_all - qdot
+    return X_all[spec.warmup : -1, :], y_all[spec.warmup : -1, :]
 
 
 # ----------------------------------------------------------------------------
 # Normalization
 # ----------------------------------------------------------------------------
+
 
 @dataclass
 class Normalizer:
@@ -406,6 +410,7 @@ class Normalizer:
 # Model
 # ----------------------------------------------------------------------------
 
+
 class MLP(nn.Module):
     """Plain feed-forward MLP with a selectable activation.
 
@@ -429,9 +434,7 @@ class MLP(nn.Module):
         super().__init__()
         hidden = ModelSpec().hidden if hidden is None else tuple(hidden)
         if activation not in ACTIVATIONS:
-            raise ValueError(
-                f"Unknown activation {activation!r}; expected one of {sorted(ACTIVATIONS)}"
-            )
+            raise ValueError(f"Unknown activation {activation!r}; expected one of {sorted(ACTIVATIONS)}")
         make_activation = ACTIVATIONS[activation]
         layers: List[nn.Module] = []
         prev = in_dim
@@ -458,6 +461,7 @@ class MLP(nn.Module):
 # ----------------------------------------------------------------------------
 # Loading clean CSVs
 # ----------------------------------------------------------------------------
+
 
 @dataclass
 class Chunk:
@@ -519,8 +523,8 @@ def _resolve_dir(value: str) -> Path:
 def resolve_model_dir(value: str) -> Path:
     """Locate a trained model directory the same way :func:`resolve_csvs` does.
 
-    Model directories live at the repository root (``models/arm``), while these
-    tools live one level down, so a bare ``--model models/arm`` has to resolve
+    Model directories live at the repository root (``models/arm_v4``), while these
+    tools live one level down, so a bare ``--model models/arm_v4`` has to resolve
     upwards as well as against the working directory.
     """
     return _resolve_dir(value)
@@ -583,13 +587,12 @@ def split_into_segments(
     pd = _pandas()
     df = df.copy()
     df[time_col] = pd.to_numeric(df[time_col], errors="coerce")
-    df = df.dropna(subset=[time_col])
     if len(df) < 2:
         return []
 
     t = df[time_col].to_numpy(np.float64)
     gaps = np.diff(t)
-    discontinuity = (gaps <= 0.0) | (gaps > max_gap_factor * dt)
+    discontinuity = ~np.isfinite(gaps) | (gaps <= 0.0) | (gaps > max_gap_factor * dt)
 
     if "sample_idx" in df.columns:
         sample_idx = pd.to_numeric(df["sample_idx"], errors="coerce").to_numpy()
@@ -608,11 +611,7 @@ def _runs_of_true(mask: np.ndarray) -> List[Tuple[int, int]]:
         return []
     edges = np.flatnonzero(np.diff(mask.astype(np.int8)))
     bounds = np.concatenate(([0], edges + 1, [len(mask)]))
-    return [
-        (int(a), int(b))
-        for a, b in zip(bounds[:-1], bounds[1:])
-        if mask[a]
-    ]
+    return [(int(a), int(b)) for a, b in zip(bounds[:-1], bounds[1:]) if mask[a]]
 
 
 def load_chunks(path: Path, spec: WindowSpec) -> List[Chunk]:
@@ -639,7 +638,22 @@ def load_chunks(path: Path, spec: WindowSpec) -> List[Chunk]:
         raise ValueError(f"{path.name} has no continuous timestamped data")
 
     out: List[Chunk] = []
-    for raw in segments:
+    # Reject observations BEFORE interpolation. Otherwise np.interp bridges a
+    # NaN and makes the subsequent finite check report fabricated data as valid.
+    finite_segments = []
+    for segment in segments:
+        values = segment[required].apply(pd.to_numeric, errors="coerce").to_numpy(np.float64)
+        good = np.isfinite(values).all(axis=1)
+        if "cmd_stale" in segment:
+            stale = pd.to_numeric(segment["cmd_stale"], errors="coerce").to_numpy()
+            good &= np.isfinite(stale) & (stale <= 0.5)
+        for age_col in ("state_age_s", "vel_age_s", "cmd_age_s"):
+            if age_col in segment:
+                age = pd.to_numeric(segment[age_col], errors="coerce").to_numpy()
+                good &= np.isfinite(age) & (age >= 0.0) & (age <= 3.0 * spec.dt)
+        finite_segments.extend(segment.iloc[a:b] for a, b in _runs_of_true(good) if b - a >= 2)
+
+    for raw in finite_segments:
         seg = resample_to_fixed_dt(raw, spec)
         values = seg[list(spec.q_cols + spec.qdot_cols + spec.u_cols)].to_numpy(np.float64)
         good = np.isfinite(values).all(axis=1)
@@ -667,6 +681,7 @@ def load_chunks(path: Path, spec: WindowSpec) -> List[Chunk]:
 # Pool assembly
 # ----------------------------------------------------------------------------
 
+
 @dataclass
 class Pool:
     """All windows from a set of CSVs, concatenated in file/chunk order.
@@ -677,14 +692,14 @@ class Pool:
     they cost ~2% of the memory ``X`` already uses.
     """
 
-    X: np.ndarray           # [N, in_dim]
-    y: np.ndarray           # [N, 3]
-    q: np.ndarray           # [N, 3] position at window time
-    qdot: np.ndarray        # [N, 3] velocity at window time
-    u: np.ndarray           # [N, 3] command at window time
-    counts: List[int]       # windows per chunk; sum(counts) == N
+    X: np.ndarray  # [N, in_dim]
+    y: np.ndarray  # [N, 3]
+    q: np.ndarray  # [N, 3] position at window time
+    qdot: np.ndarray  # [N, 3] velocity at window time
+    u: np.ndarray  # [N, 3] command at window time
+    counts: List[int]  # windows per chunk; sum(counts) == N
     names: List[str]
-    t_ends: List[float]     # per chunk, last timestamp within its source recording
+    t_ends: List[float]  # per chunk, last timestamp within its source recording
     files: List[str]
 
     def __len__(self) -> int:

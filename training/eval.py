@@ -29,6 +29,7 @@ Metrics:
   4. RESPONSE     mean predicted vs true qdot binned by command magnitude.
                   Checks monotonicity and per-axis gain.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,9 +37,9 @@ import json
 import os
 from pathlib import Path
 
+import lerobot_source
 import numpy as np
 import torch
-
 from dataset import (
     MLP,
     ModelSpec,
@@ -50,7 +51,6 @@ from dataset import (
     resolve_dataset_dir,
     resolve_model_dir,
 )
-import lerobot_source
 
 
 def channel_labels(cols) -> list[str]:
@@ -66,7 +66,7 @@ def channel_labels(cols) -> list[str]:
         return [cols[0].rsplit("_", 1)[-1] or cols[0]]
     prefix = os.path.commonprefix(cols)
     prefix = prefix[: prefix.rfind("_") + 1]
-    labels = [c[len(prefix):] or c for c in cols]
+    labels = [c[len(prefix) :] or c for c in cols]
     return labels if len(set(labels)) == len(labels) else cols
 
 
@@ -90,9 +90,7 @@ class Rollout:
         self.weights = weights if weights is not None else model_dir / "mlp_state_dict.pt"
         self.arch = ModelSpec.from_meta(meta)
         self.model = MLP.from_meta(meta)
-        self.model.load_state_dict(
-            torch.load(self.weights, map_location="cpu", weights_only=True)
-        )
+        self.model.load_state_dict(torch.load(self.weights, map_location="cpu", weights_only=True))
         self.model.eval()
 
     def predict(self, x: np.ndarray) -> np.ndarray:
@@ -104,8 +102,8 @@ class Rollout:
             model_output = self.ynorm.inverse(self.model(t).numpy())
 
         offset = self.spec.qdot_offset
-        current_qdot = np.asarray(x)[..., offset:offset + self.spec.n_qdot]
-        return model_output + current_qdot
+        current_qdot = np.asarray(x)[..., offset : offset + self.spec.n_qdot]
+        return model_output + current_qdot if self.target_mode == "delta_velocity" else model_output
 
     def features(self, q, qdot, u) -> np.ndarray:
         return build_features(q, qdot, u, self.spec)
@@ -128,6 +126,7 @@ class Rollout:
         u_seq: np.ndarray,
         velocity_limit: float | None = None,
         position_limits: np.ndarray | None = None,
+        endstop_guard=None,
     ):
         """Free-running rollout: model's own qdot is fed back. Returns (qdot_pred, q_pred)."""
         steps = len(u_seq)
@@ -137,24 +136,35 @@ class Rollout:
         vbuf = np.zeros((nv, spec.n_qdot), np.float32)
         ubuf = np.zeros((nu, spec.n_u), np.float32)
         for k in range(nq - 1, -1, -1):
-            qbuf = np.roll(qbuf, 1, 0); qbuf[0] = q[max(start - k, 0)]
+            qbuf = np.roll(qbuf, 1, 0)
+            qbuf[0] = q[max(start - k, 0)]
         for k in range(nv - 1, -1, -1):
-            vbuf = np.roll(vbuf, 1, 0); vbuf[0] = qdot[max(start - k, 0)]
+            vbuf = np.roll(vbuf, 1, 0)
+            vbuf[0] = qdot[max(start - k, 0)]
         for k in range(nu - 1, -1, -1):
-            ubuf = np.roll(ubuf, 1, 0); ubuf[0] = u[max(start - 1 - k, 0)]
+            ubuf = np.roll(ubuf, 1, 0)
+            ubuf[0] = u[max(start - 1 - k, 0)]
 
         qc = q[start].copy()
         ov = np.zeros((steps, spec.n_qdot), np.float32)
         oq = np.zeros((steps, spec.n_q), np.float32)
         for s in range(steps):
-            ubuf = np.roll(ubuf, 1, 0); ubuf[0] = u_seq[s]
-            parts = ([qbuf.flatten()] if spec.include_q else []) + \
-                    ([vbuf[::spec.qdot_stride].flatten()] if spec.hist_qdot > 0 else []) + \
-                    [ubuf[::spec.u_stride].flatten()]
+            ubuf = np.roll(ubuf, 1, 0)
+            ubuf[0] = u_seq[s]
+            parts = (
+                ([qbuf.flatten()] if spec.include_q else [])
+                + ([vbuf[:: spec.qdot_stride].flatten()] if spec.hist_qdot > 0 else [])
+                + [ubuf[:: spec.u_stride].flatten()]
+            )
             p = self.predict(np.concatenate(parts))[0].astype(np.float32)
             if velocity_limit is not None:
-                p = (np.clip(p, -velocity_limit, velocity_limit)
-                     if np.all(np.isfinite(p)) else np.zeros_like(p))
+                p = (
+                    np.clip(p, -velocity_limit, velocity_limit)
+                    if np.all(np.isfinite(p))
+                    else np.zeros_like(p)
+                )
+            if endstop_guard is not None:
+                p = endstop_guard.apply(qc, p, u_seq[s])
             next_q = qc + self.dt * p
             if position_limits is not None:
                 clamped_q = np.clip(next_q, position_limits[:, 0], position_limits[:, 1])
@@ -163,11 +173,12 @@ class Rollout:
             ov[s] = p
             qc = next_q
             oq[s] = qc
-            qbuf = np.roll(qbuf, 1, 0); qbuf[0] = qc
+            qbuf = np.roll(qbuf, 1, 0)
+            qbuf[0] = qc
             if self.hq > 0:
-                vbuf = np.roll(vbuf, 1, 0); vbuf[0] = p
+                vbuf = np.roll(vbuf, 1, 0)
+                vbuf[0] = p
         return ov, oq
-
 
     def free_run_batch(self, q, qdot, u, starts, u_seqs):
         """
@@ -197,25 +208,30 @@ class Rollout:
         ov = np.zeros((B, steps, spec.n_qdot), np.float32)
         oq = np.zeros((B, steps, spec.n_q), np.float32)
         for s in range(steps):
-            ubuf = np.roll(ubuf, 1, axis=1); ubuf[:, 0] = u_seqs[:, s]
-            parts = ([qbuf.reshape(B, -1)] if spec.include_q else []) + \
-                    ([vbuf[:, ::spec.qdot_stride].reshape(B, -1)] if spec.hist_qdot > 0 else []) + \
-                    [ubuf[:, ::spec.u_stride].reshape(B, -1)]
+            ubuf = np.roll(ubuf, 1, axis=1)
+            ubuf[:, 0] = u_seqs[:, s]
+            parts = (
+                ([qbuf.reshape(B, -1)] if spec.include_q else [])
+                + ([vbuf[:, :: spec.qdot_stride].reshape(B, -1)] if spec.hist_qdot > 0 else [])
+                + [ubuf[:, :: spec.u_stride].reshape(B, -1)]
+            )
             x = np.concatenate(parts, axis=1)
             p = self.predict(x).astype(np.float32)
             ov[:, s] = p
             qc = qc + self.dt * p
             oq[:, s] = qc
-            qbuf = np.roll(qbuf, 1, axis=1); qbuf[:, 0] = qc
+            qbuf = np.roll(qbuf, 1, axis=1)
+            qbuf[:, 0] = qc
             if self.hq > 0:
-                vbuf = np.roll(vbuf, 1, axis=1); vbuf[:, 0] = p
+                vbuf = np.roll(vbuf, 1, axis=1)
+                vbuf[:, 0] = p
         return ov, oq
 
 
 def quiet_starts(u, hu, n, margin):
     """Indices where the command has been at rest for a full u-history window."""
     quiet = (np.abs(u) < 0.02).all(axis=1)
-    runlen = np.convolve(quiet.astype(int), np.ones(hu, int), mode="full")[:len(quiet)]
+    runlen = np.convolve(quiet.astype(int), np.ones(hu, int), mode="full")[: len(quiet)]
     s = np.where(runlen >= hu)[0]
     s = s[(s > hu) & (s < len(u) - margin)]
     return s[:: max(1, len(s) // n)][:n]
@@ -233,9 +249,9 @@ def compute_metrics(R: "Rollout", q, qdot, u, n_track=24, n_rest=12, seed=0):
     H = int(5.0 / R.dt)
     history_len = R.history_samples
     starts = np.random.default_rng(seed).integers(history_len + 1, T - H - 2, size=n_track)
-    ov, oq = R.free_run_batch(q, qdot, u, starts, np.stack([u[s:s + H] for s in starts]))
-    tv = np.stack([qdot[s + 1:s + 1 + H] for s in starts])
-    tp = np.stack([q[s + 1:s + 1 + H] for s in starts])
+    ov, oq = R.free_run_batch(q, qdot, u, starts, np.stack([u[s : s + H] for s in starts]))
+    tv = np.stack([qdot[s + 1 : s + 1 + H] for s in starts])
+    tp = np.stack([q[s + 1 : s + 1 + H] for s in starts])
     roll_v = float(np.sqrt(((ov - tv) ** 2).mean(axis=1)).mean())
     roll_p = float(np.abs(oq - tp)[:, -1].mean())
 
@@ -244,9 +260,8 @@ def compute_metrics(R: "Rollout", q, qdot, u, n_track=24, n_rest=12, seed=0):
     if len(qs):
         steps = int(3.0 / R.dt)
         ov2, _ = R.free_run_batch(q, qdot, u, qs, np.zeros((len(qs), steps, R.spec.n_u), np.float32))
-        rest = float(np.abs(ov2[:, int(2.0 / R.dt):]).mean())
-    return {"r2_1step": r2, "rollout_vel": roll_v, "rollout_pos": roll_p,
-            "rest": rest}
+        rest = float(np.abs(ov2[:, int(2.0 / R.dt) :]).mean())
+    return {"r2_1step": r2, "rollout_vel": roll_v, "rollout_pos": roll_p, "rest": rest}
 
 
 def load_log_segments(csv: Path, spec: WindowSpec):
@@ -297,11 +312,15 @@ def main(
 ):
     resolved = resolve_model_dir(model_dir)
     R = Rollout(resolved, Path(weights) if weights else None)
-    print(f"model : {resolved}  weights={R.weights.name}  (dt={R.dt}s "
-          f"hist_qdot={R.hq} hist_u={R.hu} target={R.target_mode})")
-    print(f"arch  : hidden={list(R.arch.hidden)} activation={R.arch.activation} "
-          f"in_dim={R.spec.in_dim} out_dim={R.spec.out_dim} "
-          f"joints={R.spec.n_qdot} commands={R.spec.n_u}")
+    print(
+        f"model : {resolved}  weights={R.weights.name}  (dt={R.dt}s "
+        f"hist_qdot={R.hq} hist_u={R.hu} target={R.target_mode})"
+    )
+    print(
+        f"arch  : hidden={list(R.arch.hidden)} activation={R.arch.activation} "
+        f"in_dim={R.spec.in_dim} out_dim={R.spec.out_dim} "
+        f"joints={R.spec.n_qdot} commands={R.spec.n_u}"
+    )
     labels = channel_labels(R.spec.qdot_cols)
 
     if (csv is None) == (lerobot_path is None):
@@ -310,9 +329,7 @@ def main(
         root = resolve_dataset_dir(lerobot_path)
         period = lerobot_source.dataset_dt(lerobot_source.load_info(root))
         if abs(period - R.dt) > 1e-6:
-            raise ValueError(
-                f"dataset runs at dt={period:g}s but this model was trained at dt={R.dt:g}s"
-            )
+            raise ValueError(f"dataset runs at dt={period:g}s but this model was trained at dt={R.dt:g}s")
         source_files = [root]
         logs = load_pool_segments(source_files, R.spec, lerobot_source.load_lerobot_chunks)
         label = root.name
@@ -358,7 +375,7 @@ def main(
     X = R.features(q, qdot, u)[eval_start:-1]
     Y = np.roll(qdot, -1, axis=0)[eval_start:-1]
     P = R.predict(X)
-    persist = qdot[R.history_samples - 1:-1]
+    persist = qdot[R.history_samples - 1 : -1]
 
     def r2(p, t):
         return 1.0 - ((p - t) ** 2).sum(0) / ((t - t.mean(0)) ** 2).sum(0)
@@ -375,12 +392,11 @@ def main(
 
     # ---------------- 2) free-running rollout ----------------
     print("\n=== 2) ROLLOUT (free-running, real commands) ===")
-    print("  vel RMSE [rad/s] and final position error [rad], mean over "
-          f"{n_track} random starts")
-    header = "".join(f"{('vel ' + n) if i == 0 else n:>{9 if i == 0 else 7}s}"
-                     for i, n in enumerate(labels))
-    header += " |" + "".join(f"{('pos ' + n) if i == 0 else n:>{9 if i == 0 else 7}s}"
-                             for i, n in enumerate(labels))
+    print(f"  vel RMSE [rad/s] and final position error [rad], mean over {n_track} random starts")
+    header = "".join(f"{('vel ' + n) if i == 0 else n:>{9 if i == 0 else 7}s}" for i, n in enumerate(labels))
+    header += " |" + "".join(
+        f"{('pos ' + n) if i == 0 else n:>{9 if i == 0 else 7}s}" for i, n in enumerate(labels)
+    )
     print(f"  {'horizon':>8s} |{header}")
     rng = np.random.default_rng(seed)
     for hsec in horizons:
@@ -391,10 +407,11 @@ def main(
         starts = rng.integers(history_len + 1, T - H - 2, size=n_track)
         ve, pe = [], []
         for s0 in starts:
-            ov, oq = R.free_run(q, qdot, u, int(s0), u[s0:s0 + H])
-            ve.append(np.sqrt(((ov - qdot[s0 + 1:s0 + 1 + H]) ** 2).mean(0)))
-            pe.append(np.abs(oq - q[s0 + 1:s0 + 1 + H])[-1])
-        ve = np.array(ve).mean(0); pe = np.array(pe).mean(0)
+            ov, oq = R.free_run(q, qdot, u, int(s0), u[s0 : s0 + H])
+            ve.append(np.sqrt(((ov - qdot[s0 + 1 : s0 + 1 + H]) ** 2).mean(0)))
+            pe.append(np.abs(oq - q[s0 + 1 : s0 + 1 + H])[-1])
+        ve = np.array(ve).mean(0)
+        pe = np.array(pe).mean(0)
         row = "".join(f"{v:>{9 if i == 0 else 7}.3f}" for i, v in enumerate(ve))
         row += " |" + "".join(f"{v:>{9 if i == 0 else 7}.3f}" for i, v in enumerate(pe))
         print(f"  {hsec:6.1f}s |{row}")
@@ -403,7 +420,7 @@ def main(
     print("\n=== 3) REST (hold u=0 from real quiet points, self-fed) ===")
     quiet = (np.abs(u) < 0.02).all(axis=1)
     history_len = R.history_samples
-    runlen = np.convolve(quiet.astype(int), np.ones(history_len, int), mode="full")[:len(quiet)]
+    runlen = np.convolve(quiet.astype(int), np.ones(history_len, int), mode="full")[: len(quiet)]
     starts = np.where(runlen >= history_len)[0]
     starts = starts[(starts > history_len) & (starts < T - int(3.0 / R.dt) - 2)]
     if len(starts) == 0:
@@ -414,37 +431,46 @@ def main(
         early, late, drift = [], [], []
         for s0 in starts:
             ov, oq = R.free_run(q, qdot, u, int(s0), np.zeros((steps, R.spec.n_u), np.float32))
-            early.append(np.abs(ov[:int(1.0 / R.dt)]).mean(0))
-            late.append(np.abs(ov[int(2.0 / R.dt):]).mean(0))
+            early.append(np.abs(ov[: int(1.0 / R.dt)]).mean(0))
+            late.append(np.abs(ov[int(2.0 / R.dt) :]).mean(0))
             drift.append(oq[-1] - q[s0])
-        early = np.array(early).mean(0); late = np.array(late).mean(0)
+        early = np.array(early).mean(0)
+        late = np.array(late).mean(0)
         drift = np.array(drift).mean(0)
         print(f"  windows={len(starts)}")
-        print(f"  |qdot| 0-1s : " + "  ".join(f"{n}={early[i]:.4f}" for i, n in enumerate(labels)))
-        print(f"  |qdot| 2-3s : " + "  ".join(f"{n}={late[i]:.4f}" for i, n in enumerate(labels)))
+        print("  |qdot| 0-1s : " + "  ".join(f"{n}={early[i]:.4f}" for i, n in enumerate(labels)))
+        print("  |qdot| 2-3s : " + "  ".join(f"{n}={late[i]:.4f}" for i, n in enumerate(labels)))
         grew = late > early * 1.15 + 1e-3
         if grew.any():
-            print("  VERDICT     : growing -> limit cycle on "
-                  + ", ".join(n for i, n in enumerate(labels) if grew[i])
-                  + "   (model requires a rollout-stability change)")
+            print(
+                "  VERDICT     : growing -> limit cycle on "
+                + ", ".join(n for i, n in enumerate(labels) if grew[i])
+                + "   (model requires a rollout-stability change)"
+            )
         elif late.max() < 0.01:
             print("  VERDICT     : settles to rest")
         else:
             print(f"  VERDICT     : stable but creeps ({late.max():.3f} rad/s worst axis)")
-        print(f"  drift @3s   : " + "  ".join(f"{n}={drift[i]:+.4f}" for i, n in enumerate(labels)))
+        print("  drift @3s   : " + "  ".join(f"{n}={drift[i]:+.4f}" for i, n in enumerate(labels)))
 
     # ---------------- 4) command response ----------------
     print("\n=== 4) RESPONSE (binned by command, teacher forced) ===")
-    bins = [(-1.01, -0.6), (-0.6, -0.25), (-0.25, -0.02), (-0.02, 0.02),
-            (0.02, 0.25), (0.25, 0.6), (0.6, 1.01)]
+    bins = [
+        (-1.01, -0.6),
+        (-0.6, -0.25),
+        (-0.25, -0.02),
+        (-0.02, 0.02),
+        (0.02, 0.25),
+        (0.25, 0.6),
+        (0.6, 1.01),
+    ]
     for i, n in enumerate(labels):
         parts = []
         for lo, hi in bins:
             m = (u[eval_start:-1, i] >= lo) & (u[eval_start:-1, i] < hi)
             if m.sum() < 50:
                 continue
-            parts.append(f"[{lo:+.2f},{hi:+.2f}) true={Y[m][:, i].mean():+.3f} "
-                         f"pred={P[m][:, i].mean():+.3f}")
+            parts.append(f"[{lo:+.2f},{hi:+.2f}) true={Y[m][:, i].mean():+.3f} pred={P[m][:, i].mean():+.3f}")
         print(f"  {n}:")
         for p in parts:
             print(f"    {p}")
@@ -452,21 +478,23 @@ def main(
 
 if __name__ == "__main__":
     import sys
+
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
     p = argparse.ArgumentParser()
     p.add_argument(
-        "--model", default="models/arm",
+        "--model",
+        default="models/arm_v4",
         help="Trained model directory; relative paths resolve against the "
-             "working directory, then training/, then the repository root.",
+        "working directory, then training/, then the repository root.",
     )
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument(
         "--csv",
         help="Held-out log(s): a file, a directory, or a glob. Multiple files are "
-             "pooled and summarized duration-weighted.",
+        "pooled and summarized duration-weighted.",
     )
     src.add_argument(
         "--lerobot",
@@ -478,5 +506,13 @@ if __name__ == "__main__":
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--weights", default=None, help="Optional checkpoint state dict")
     a = p.parse_args()
-    main(a.model, a.csv, [float(x) for x in a.horizons.split(",")],
-         a.n_track, a.n_rest, a.seed, a.weights, lerobot_path=a.lerobot)
+    main(
+        a.model,
+        a.csv,
+        [float(x) for x in a.horizons.split(",")],
+        a.n_track,
+        a.n_rest,
+        a.seed,
+        a.weights,
+        lerobot_path=a.lerobot,
+    )

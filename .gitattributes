@@ -1,0 +1,11 @@
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.usd binary
+*.png binary
+*.pt binary
+*.npy binary
+# Frozen model metadata and normalizers must retain their release hashes.
+models/** -text whitespace=cr-at-eol

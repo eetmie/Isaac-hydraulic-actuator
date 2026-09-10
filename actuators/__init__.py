@@ -8,10 +8,38 @@ trained yet all live in the demo script that drives these classes.
 Isaac Sim; the two integrating actuators need Isaac Lab.
 """
 
-from .direct_integration_actuator import DirectIntegrationActuator, DirectIntegrationActuatorCfg
+from importlib import import_module
+from typing import TYPE_CHECKING
+
 from .hydraulic_actuator import HydraulicActuatorNet
-from .integrating_actuator_base import IntegratingActuatorBase, IntegratingActuatorCfg
-from .velocity_integrated_actuator import VelocityIntegratedActuator, VelocityIntegratedActuatorCfg
+
+if TYPE_CHECKING:
+    from .direct_integration_actuator import DirectIntegrationActuator, DirectIntegrationActuatorCfg
+    from .integrating_actuator_base import IntegratingActuatorBase, IntegratingActuatorCfg
+    from .velocity_integrated_actuator import VelocityIntegratedActuator, VelocityIntegratedActuatorCfg
+
+_SIM_EXPORTS = {
+    "DirectIntegrationActuator": ".direct_integration_actuator",
+    "DirectIntegrationActuatorCfg": ".direct_integration_actuator",
+    "IntegratingActuatorBase": ".integrating_actuator_base",
+    "IntegratingActuatorCfg": ".integrating_actuator_base",
+    "VelocityIntegratedActuator": ".velocity_integrated_actuator",
+    "VelocityIntegratedActuatorCfg": ".velocity_integrated_actuator",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Load simulation classes only when requested, preserving package exports."""
+    if name not in _SIM_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(_SIM_EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
 
 __all__ = [
     "DirectIntegrationActuator",

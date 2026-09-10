@@ -17,7 +17,6 @@ from typing import List, Sequence, Tuple
 
 import numpy as np
 import torch
-
 from dataset import WindowSpec
 
 
@@ -98,7 +97,7 @@ class RolloutScorer:
         self.ubuf0 = tens(np.stack([u[starts - 1 - k] for k in range(nu)], axis=1))
         self.q0 = tens(q[starts])
         # Real commands drive the rollout; only the state is fed back.
-        self.u_seq = tens(np.stack([u[s:s + horizon] for s in starts], axis=0))
+        self.u_seq = tens(np.stack([u[s : s + horizon] for s in starts], axis=0))
         self.q_true = tens(q[starts + horizon])
 
         self.x_mean, self.x_std = tens(x_mean), tens(x_std)
@@ -123,12 +122,12 @@ class RolloutScorer:
 
             parts = [qbuf.reshape(B, -1)] if spec.include_q else []
             if spec.hist_qdot > 0:
-                parts.append(vbuf[:, ::spec.qdot_stride].reshape(B, -1))
-            parts.append(ubuf[:, ::spec.u_stride].reshape(B, -1))
+                parts.append(vbuf[:, :: spec.qdot_stride].reshape(B, -1))
+            parts.append(ubuf[:, :: spec.u_stride].reshape(B, -1))
             x = torch.cat(parts, dim=1)
 
             delta = model((x - self.x_mean) / self.x_std) * self.y_std + self.y_mean
-            qdot_next = vbuf[:, 0] + delta          # newest velocity tap is qdot(t)
+            qdot_next = vbuf[:, 0] + delta if spec.target_mode == "delta_velocity" else delta
             qc = qc + spec.dt * qdot_next
 
             qbuf = torch.roll(qbuf, 1, dims=1)

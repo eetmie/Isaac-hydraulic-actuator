@@ -1,0 +1,16 @@
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["local"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# Isaac imports must follow AppLauncher; standalone training scripts set sys.path.
+"sim.py" = ["E402"]
+"training/test_*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["training"]
+norecursedirs = ["local", "runs", ".git"]

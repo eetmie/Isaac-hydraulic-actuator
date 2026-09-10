@@ -1,0 +1,98 @@
+{
+  "dt": 0.01,
+  "target_mode": "delta_velocity",
+  "hist_q": 1,
+  "hist_qdot": 41,
+  "hist_u": 21,
+  "qdot_stride": 1,
+  "u_stride": 3,
+  "hist_q_sec": 0.0,
+  "hist_qdot_sec": 0.4,
+  "hist_u_sec": 0.6000000000000001,
+  "include_q": true,
+  "time_col": "timestamp",
+  "u_cols": [
+    "combined_cmd_lift",
+    "combined_cmd_tilt",
+    "combined_cmd_scoop"
+  ],
+  "q_cols": [
+    "joint_pos_boom",
+    "joint_pos_arm",
+    "joint_pos_bucket",
+    "carriage_pitch"
+  ],
+  "qdot_cols": [
+    "joint_vel_boom",
+    "joint_vel_arm",
+    "joint_vel_bucket",
+    "carriage_pitch_rate"
+  ],
+  "units": {
+    "timestamp_raw": "s",
+    "joint_position": "rad",
+    "joint_velocity": "rad/s",
+    "command": "normalized_-1_to_1"
+  },
+  "model": {
+    "hidden": [
+      512,
+      512,
+      384
+    ],
+    "activation": "relu",
+    "in_dim": 231,
+    "out_dim": 4,
+    "target": "delta_velocity"
+  },
+  "version": "V4-system",
+  "learned_carriage": true,
+  "simulation_joint_names": [
+    "revolute_lift",
+    "revolute_tilt",
+    "revolute_tool",
+    "revolute_carriage_pitch"
+  ],
+  "training": {
+    "data": "data_clean\\v4",
+    "manifest_sha256": "2f6519af5e7a4a8a54939c87f81429cce4776fbaa2f532efcdc98600cd989146",
+    "test_seen": false,
+    "dropped_motion": "carriage_roll",
+    "mixture": true,
+    "label": "smooth21",
+    "lr": 1e-06,
+    "steps": 6000,
+    "seed": 901,
+    "horizon": 100,
+    "parent": "training\\runs\\v4\\transfer_mix",
+    "best_step": 1000,
+    "metrics": {
+      "finite": true,
+      "score": 3.6618687365204097,
+      "rest_10s_deg": 0.2954263985157013,
+      "rest_pitch_deg": 0.008426429703831673,
+      "new": {
+        "path_deg": 1.8393405675888062,
+        "endpoint_10s_deg": 2.862823963165283,
+        "per_joint_10s_deg": [
+          1.7424153089523315,
+          2.942761182785034,
+          3.9032957553863525
+        ],
+        "pitch_mae_deg": 0.025630362331867218,
+        "pitch_velocity_rmse_deg_s": 0.8183941841125488
+      },
+      "legacy": {
+        "path_deg": 2.9192326068878174,
+        "endpoint_10s_deg": 4.708849906921387,
+        "per_joint_10s_deg": [
+          2.263032913208008,
+          5.608482837677002,
+          6.255035400390625
+        ],
+        "pitch_mae_deg": 0.03738736733794212,
+        "pitch_velocity_rmse_deg_s": 0.5348297953605652
+      }
+    }
+  }
+}

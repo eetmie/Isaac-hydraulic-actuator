@@ -10,7 +10,7 @@ test_parity is what catches that. Run it after any change to the feature layout,
 the meta keys, or the network architecture.
 
     python test_contract.py                     # split and meta tests only
-    python test_contract.py --model models/arm  # adds the two parity tests
+    python test_contract.py --model models/arm_v4  # adds the two parity tests
 
 Function names start with test_ so `pytest test_contract.py` also works, but
 pytest is not required.
@@ -35,13 +35,21 @@ from splits import (
     train_val_indices,
 )
 
-
 # Every key actuators/hydraulic_actuator.py reads with [] -- a rename here is a
 # KeyError at sim startup, so this list is the contract.
 REQUIRED_META = [
-    "dt", "hist_q", "hist_qdot", "hist_u",
-    "qdot_stride", "u_stride", "include_q", "target_mode",
-    "q_cols", "qdot_cols", "u_cols", "time_col",
+    "dt",
+    "hist_q",
+    "hist_qdot",
+    "hist_u",
+    "qdot_stride",
+    "u_stride",
+    "include_q",
+    "target_mode",
+    "q_cols",
+    "qdot_cols",
+    "u_cols",
+    "time_col",
 ]
 REQUIRED_META_MODEL = ["in_dim", "out_dim", "hidden", "activation"]
 
@@ -82,6 +90,7 @@ def test_meta_roundtrip() -> None:
     """A spec survives a trip through model_meta.json, and keeps every sim key."""
     specs = (
         WindowSpec(),
+        WindowSpec(target_mode="velocity"),
         WindowSpec.from_seconds(0.2, 1.5, 0.03),
         WindowSpec(hist_q=1, hist_qdot=6, hist_u=20, qdot_stride=2, u_stride=5),
         SLEW_SPEC,
@@ -108,9 +117,7 @@ def test_width_derivation() -> None:
 
     # Commands are counted separately from joints.
     assert WIDE_U_SPEC.out_dim == 3
-    assert WIDE_U_SPEC.in_dim == (
-        3 * WIDE_U_SPEC.hist_q + 3 * WIDE_U_SPEC.hist_qdot + 4 * WIDE_U_SPEC.hist_u
-    )
+    assert WIDE_U_SPEC.in_dim == (3 * WIDE_U_SPEC.hist_q + 3 * WIDE_U_SPEC.hist_qdot + 4 * WIDE_U_SPEC.hist_u)
 
     # Position is integrated from velocity, so those two widths cannot differ.
     try:
@@ -151,11 +158,13 @@ LEROBOT_INFO = {
     "fps": 100,
     "features": {
         "observation.state": {
-            "dtype": "float32", "shape": [4],
+            "dtype": "float32",
+            "shape": [4],
             "names": ["pos_a", "pos_b", "vel_a", "vel_b"],
         },
         "action": {
-            "dtype": "float32", "shape": [3],
+            "dtype": "float32",
+            "shape": [3],
             "names": {"motors": ["cmd_slew", "cmd_a", "cmd_b"]},
         },
         "load": {"dtype": "float32", "shape": [1], "names": None},
@@ -236,21 +245,19 @@ def test_split_no_leakage() -> None:
     """Whole source recordings are disjoint and no windows are discarded."""
     counts = [100, 120, 140, 160, 180]
     sources = ["recording_a", "recording_a", "recording_b", "recording_c", "recording_d"]
-    train_idx, val_idx, val_ranges, info = train_val_indices(
-        counts, sources, val_fraction=0.25, seed=0
-    )
+    train_idx, val_idx, val_ranges, info = train_val_indices(counts, sources, val_fraction=0.25, seed=0)
 
     offsets = np.cumsum([0, *counts])
     source_by_index = np.empty(sum(counts), dtype=object)
     for i, source in enumerate(sources):
-        source_by_index[offsets[i]:offsets[i + 1]] = source
+        source_by_index[offsets[i] : offsets[i + 1]] = source
     train_sources = set(source_by_index[train_idx])
     val_sources = set(source_by_index[val_idx])
 
     assert train_sources.isdisjoint(val_sources), "a recording appears in both splits"
-    assert np.array_equal(
-        np.sort(np.concatenate([train_idx, val_idx])), np.arange(sum(counts))
-    ), "split lost or duplicated windows"
+    assert np.array_equal(np.sort(np.concatenate([train_idx, val_idx])), np.arange(sum(counts))), (
+        "split lost or duplicated windows"
+    )
     assert info["windows_dropped"] == 0
     assert len(val_ranges) == sum(source in val_sources for source in sources)
 
@@ -300,11 +307,11 @@ def test_session_grouping() -> None:
     ten minutes of the same drive through a split built to prevent exactly that.
     """
     names = [
-        "drive_log_20260804_185559_seg000_chunk000",   # 18:55:59 + 600.00 s
-        "drive_log_20260804_190558_seg001_chunk000",   # 19:05:58 -> continuation
-        "drive_log_20260805_165209_seg000_chunk000",   # 16:52:09 + 600.01 s
-        "drive_log_20260805_165216_seg001_chunk000",   # starts inside the above
-        "drive_log_20260805_131325_seg000_chunk000",   # its own drive
+        "drive_log_20260804_185559_seg000_chunk000",  # 18:55:59 + 600.00 s
+        "drive_log_20260804_190558_seg001_chunk000",  # 19:05:58 -> continuation
+        "drive_log_20260805_165209_seg000_chunk000",  # 16:52:09 + 600.01 s
+        "drive_log_20260805_165216_seg001_chunk000",  # starts inside the above
+        "drive_log_20260805_131325_seg000_chunk000",  # its own drive
     ]
     t_ends = [600.00, 594.92, 600.01, 2.87, 600.01]
     groups = session_ids(names, t_ends)
@@ -383,10 +390,13 @@ def test_rollout_matches_eval(model_dir: str, tol: float = 1e-4) -> float:
     t = np.arange(T, dtype=np.float32) * spec.dt
 
     def waves(n: int, base: float, spread: float, scale: float = 1.0) -> np.ndarray:
-        return (scale * np.stack(
-            [np.sin(2 * np.pi * (base + i * spread) * t + 0.7 * i) for i in range(n)],
-            axis=1,
-        )).astype(np.float32)
+        return (
+            scale
+            * np.stack(
+                [np.sin(2 * np.pi * (base + i * spread) * t + 0.7 * i) for i in range(n)],
+                axis=1,
+            )
+        ).astype(np.float32)
 
     u = waves(spec.n_u, 0.31, 0.22)
     qdot = waves(spec.n_qdot, 0.23, 0.19, scale=0.4)
@@ -396,19 +406,27 @@ def test_rollout_matches_eval(model_dir: str, tol: float = 1e-4) -> float:
     starts = np.arange(spec.history_samples, spec.history_samples + 32) * 7
     starts = starts[starts + horizon < len(q) - 1]
 
-    _, oq = R.free_run_batch(q, qdot, u, starts, np.stack([u[s:s + horizon] for s in starts]))
+    _, oq = R.free_run_batch(q, qdot, u, starts, np.stack([u[s : s + horizon] for s in starts]))
     numpy_error = float(np.abs(oq[:, -1] - q[starts + horizon]).mean())
 
     scorer = RolloutScorer(
-        spec, q, qdot, u, starts, horizon,
-        R.xnorm.mean, R.xnorm.std, R.ynorm.mean, R.ynorm.std, "cpu",
+        spec,
+        q,
+        qdot,
+        u,
+        starts,
+        horizon,
+        R.xnorm.mean,
+        R.xnorm.std,
+        R.ynorm.mean,
+        R.ynorm.std,
+        "cpu",
     )
     torch_error = scorer.score(R.model)
 
     diff = abs(numpy_error - torch_error)
     assert diff < tol, (
-        f"torch rollout {torch_error:.6f} != numpy rollout {numpy_error:.6f} "
-        f"(diff {diff:.2e}, tol {tol:.0e})"
+        f"torch rollout {torch_error:.6f} != numpy rollout {numpy_error:.6f} (diff {diff:.2e}, tol {tol:.0e})"
     )
     return diff
 
@@ -416,18 +434,24 @@ def test_rollout_matches_eval(model_dir: str, tol: float = 1e-4) -> float:
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument(
-        "--model", default=None,
-        help="Model dir to run the parity tests against, e.g. models/arm",
+        "--model",
+        default=None,
+        help="Model dir to run the parity tests against, e.g. models/arm_v4",
     )
     p.add_argument("--tol", type=float, default=1e-5)
     args = p.parse_args()
 
     failures = 0
-    for fn in (test_meta_roundtrip, test_width_derivation,
-               test_activation_keeps_state_dict_layout,
-               test_lerobot_channel_resolution, test_lerobot_rejects_other_versions,
-               test_split_no_leakage,
-               test_snippet_split_no_leakage, test_session_grouping):
+    for fn in (
+        test_meta_roundtrip,
+        test_width_derivation,
+        test_activation_keeps_state_dict_layout,
+        test_lerobot_channel_resolution,
+        test_lerobot_rejects_other_versions,
+        test_split_no_leakage,
+        test_snippet_split_no_leakage,
+        test_session_grouping,
+    ):
         try:
             fn()
             print(f"PASS  {fn.__name__}")

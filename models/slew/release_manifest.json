@@ -1,0 +1,13 @@
+{
+  "selection_sha256": "c815d237f3c6f29dce62f454a316383ee2c12e0c7eb18bb83ddd84a6496e27d3",
+  "source": "training\\runs\\slew\\tiny_delta_equilibrium",
+  "test_seen_at_release": false,
+  "files": {
+    "model_meta.json": "79f4dde70be45160bc92c3122bcf0d8ae94ba87de04d4b27ef6db4913551f6f0",
+    "mlp_state_dict.pt": "382d0ca87b9cff2348e680db79beababe4b66e71f01608e0c0281888e614d978",
+    "x_mean.npy": "86396c2e3ca76db488aeef9226b981047756f36a4ac1f494ae0e4494f9975357",
+    "x_std.npy": "b16076702b978cc4c91246bfbebec4c40eb60e797ca9ceeb6d1eaf573b8abb0b",
+    "y_mean.npy": "de0cdc14e8a96dc5022859700afe2e3cf57ff60c931d82d6955058ec55e9b2a1",
+    "y_std.npy": "138fdc28ae68f0a77902fc3c977bbddce42cb9189ef2ffd618990501784cc49e"
+  }
+}
