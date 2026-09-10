@@ -5,6 +5,8 @@ bucket and carriage pitch**, plus an independent **slew MLP**. Both predict velo
 increments at 100 Hz; the simulator integrates the resulting velocities into joint
 positions. Carriage roll is held at zero, and slew has no rotation limits.
 
+Idea from Egli, P. and Hutter, M. (2020) 'Towards RL-Based Hydraulic Excavator Automation'. Great paper!
+
 ## Run the demo
 
 Tested with **Isaac Lab 3.0 / Isaac Sim 6.0.1**. Clone this repository into
