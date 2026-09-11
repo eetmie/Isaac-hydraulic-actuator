@@ -3,7 +3,7 @@
 A small excavator demo driven by learned hydraulic dynamics: **V4 for boom, arm,
 bucket and carriage pitch**, plus an independent **slew MLP**. Both predict velocity
 increments at 100 Hz; the simulator integrates the resulting velocities into joint
-positions. Carriage roll is held at zero, and slew has no rotation limits.
+positions.
 
 Idea from Egli, P. and Hutter, M. (2020) 'Towards RL-Based Hydraulic Excavator Automation'. Great paper!
 
@@ -61,15 +61,6 @@ The middle window deliberately retains a substantial bucket tracking error.
 | `models/arm_v4` | Boom, arm, bucket, carriage pitch | 512 / 512 / 384, ReLU | 579,972 |
 | `models/slew` | Slew | 32 / 32, tanh | 2,145 |
 
-V4 uses current positions, 0.4 s of velocity history and 0.6 s of valve history.
-It was selected on development data after comparing training variants and a
-6,000-update fine-tuning run at learning rates from 1e-6 to 1e-7. Training mixed
-new IMU recordings with older recordings corrected offline. Roll is absent from
-both inputs and outputs. The checkpoint was frozen before evaluating the test set.
-
-Slew uses 0.1 s of velocity history and 0.6 s of valve history. **Absolute heading
-is not an input**, so the velocity model works across repeated rotations. The
-zero-input equilibrium correction is already included in the weights.
 
 | Held-out endpoint MAE | 10 seconds | 30 seconds |
 | --- | ---: | ---: |
@@ -105,7 +96,7 @@ and a held valve at an end stop cannot induce a learned rebound.
 The assets include the tested target-drive gains: arm 2400 N·m/rad and
 120 N·m·s/rad; slew 600 N·m/rad and 40 N·m·s/rad. The alternative `target`
 integration route remains available for compatible three-joint models; V4 requires
-`direct`. Physics substeps do not change the network's 100 Hz control period.
+`direct`.
 
 For direct Python use, only NumPy and PyTorch are needed. From the Isaac Lab root:
 
@@ -139,8 +130,7 @@ one position, one velocity and one valve channel.
 - `training/`: reusable CSV/LeRobot training, evaluation, and regression checks.
 - `media/`: the README rollout figure.
 
-Training data, experimental trainers, older checkpoints, and development reports
-are excluded from Git. The generic trainer is a baseline training tool, not the
+The generic trainer is a baseline training tool, not the
 complete V4 fine-tuning recipe. To inspect its options or check the release:
 
 ```powershell
