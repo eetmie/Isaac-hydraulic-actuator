@@ -54,6 +54,8 @@ predictions with **no later measured-state correction**. These are offline neura
 rollouts; Isaac's direct integration was checked against the same calculation.
 The middle window deliberately retains a substantial bucket tracking error.
 
+Note that I'm using hobby grade, uncalibrated ISM330 IMU's. Industry grade 3D systems (Leica, Novatron, and such) will prob lead to _much_ better results.
+
 ## Included models
 
 | Model directory | Motion outputs | Hidden layers | Parameters |
@@ -66,7 +68,7 @@ The middle window deliberately retains a substantial bucket tracking error.
 | --- | ---: | ---: |
 | V4 arm, new IMUs | 3.49° | 6.78° |
 | V4 arm, older IMUs corrected offline | 3.71° | 6.17° |
-| Slew | 9.23° | 21.11° |
+| Slew (gyro only, tiny dataset!) | 9.23° | 21.11° |
 
 Arm errors average the three hydraulic joint endpoints across disjoint windows;
 pitch is excluded from that metric. Each arm row uses one held-out recording.
