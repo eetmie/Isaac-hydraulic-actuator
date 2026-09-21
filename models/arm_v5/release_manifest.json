@@ -1,0 +1,144 @@
+{
+  "version": "V5",
+  "source": "C:/Users/sh23937/Documents/IsaacLab/6.0.1/IsaacLab/scripts/Isaac-hydraulic-actuator/models/claude/steady",
+  "reason": "Best 10 s and 30 s held-out tracking of every model compared, with zero-command drift within 4 % of the calmest",
+  "selected_from": {
+    "name": "steady",
+    "run": "full_a",
+    "reason": "Round 1's released recipe, unchanged, on the full dataset; the reference that isolates what the new data alone bought",
+    "test_seen": false,
+    "development_score": 5.7989592376798145,
+    "best_step": 7000,
+    "best_weights": "ema",
+    "config": {
+      "name": "full_a",
+      "seed": 920,
+      "vel_hist_s": 0.4,
+      "cmd_hist_s": 0.6,
+      "cmd_stride_s": 0.03,
+      "pos_hist_s": 0.0,
+      "hidden": [
+        512,
+        512,
+        384
+      ],
+      "activation": "relu",
+      "target_mode": "delta_velocity",
+      "label": "smooth21",
+      "mixture": true,
+      "legacy_fraction": 0.5,
+      "init": "arm_v4",
+      "pretrain_epochs": 40,
+      "pretrain_lr": 0.001,
+      "pretrain_batch": 4096,
+      "pretrain_wd": 0.0001,
+      "steps": 12000,
+      "batch": 512,
+      "horizon": 100,
+      "horizon_schedule": [
+        [
+          0,
+          100
+        ],
+        [
+          5000,
+          200
+        ],
+        [
+          9000,
+          300
+        ]
+      ],
+      "lr": 3e-05,
+      "lr_floor": 0.05,
+      "grad_clip": 2.0,
+      "ema": 0.999,
+      "w_pos": 2.0,
+      "w_rest": 0.2,
+      "w_closed": 0.5,
+      "joint_weights": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "angle_scale": "per_joint",
+      "quiet_fraction": 0.0,
+      "rest_rollout_fraction": 0.0,
+      "bucket_fraction": 0.0,
+      "teachers": [],
+      "w_distill": 0.0,
+      "eval_every": 1000,
+      "graph": true,
+      "notes": "Round 1's winning recipe on the full dataset, twice the budget"
+    },
+    "development_metrics": {
+      "finite": true,
+      "score": 5.7989592376798145,
+      "new10": {
+        "finite": true,
+        "cases": 64,
+        "path_deg": 1.7778415717285492,
+        "endpoint_deg": 2.8744432772912,
+        "per_joint_endpoint_deg": [
+          1.5060601234436035,
+          2.506054401397705,
+          4.611215114593506
+        ],
+        "endpoint_p95_deg": 6.286127463467623,
+        "pitch_mae_deg": 0.038878170467439827,
+        "pitch_velocity_rmse_deg_s": 0.6348477272192908
+      },
+      "new30": {
+        "finite": true,
+        "cases": 32,
+        "path_deg": 3.3181840190808263,
+        "endpoint_deg": 5.820271849805965,
+        "per_joint_endpoint_deg": [
+          1.7990081310272217,
+          5.920064449310303,
+          9.741740226745605
+        ],
+        "endpoint_p95_deg": 15.124079341422773,
+        "pitch_mae_deg": 0.07419106222941234,
+        "pitch_velocity_rmse_deg_s": 0.6021534259314381
+      },
+      "legacy10": {
+        "finite": true,
+        "cases": 64,
+        "path_deg": 2.3294351626592023,
+        "endpoint_deg": 3.790179545919503,
+        "per_joint_endpoint_deg": [
+          1.7830363512039185,
+          4.36184549331665,
+          5.225656032562256
+        ],
+        "endpoint_p95_deg": 9.230549017013367,
+        "pitch_mae_deg": 0.04696164932435033,
+        "pitch_velocity_rmse_deg_s": 0.503011736024822
+      },
+      "rest": {
+        "finite": true,
+        "rest_deg": 0.8745637815897607,
+        "rest_worst_deg": 4.167890714568501,
+        "rest_pitch_deg": 0.0368983394179018
+      }
+    },
+    "files": {
+      "mlp_state_dict.pt": "879044ded6c95d206de41593c450792c027be6b1bd8124193154fde4b34f5fa0",
+      "model_meta.json": "77c59a64a237517588455df5dc4015c7c105c5d01c3dbddaef7a9128045eb551",
+      "x_mean.npy": "d3c9b56e36d25275cbd2ae67f7045f37c2c898a9ffa718ae2d68549f7c3ca382",
+      "x_std.npy": "7bc3a90783b94256d6c187c2196d2c3c24147564802cf318c0db80e307b2281a",
+      "y_mean.npy": "ef5600c8f06d4a9e544671908da1919ad39a7d6b4d32343d9134e5bd45c5aa45",
+      "y_std.npy": "80a75bdaca7c582826cf2af3c00a425c57502f29f77f57e354b19756133537c2"
+    }
+  },
+  "files": {
+    "mlp_state_dict.pt": "879044ded6c95d206de41593c450792c027be6b1bd8124193154fde4b34f5fa0",
+    "model_meta.json": "77c59a64a237517588455df5dc4015c7c105c5d01c3dbddaef7a9128045eb551",
+    "x_mean.npy": "d3c9b56e36d25275cbd2ae67f7045f37c2c898a9ffa718ae2d68549f7c3ca382",
+    "x_std.npy": "7bc3a90783b94256d6c187c2196d2c3c24147564802cf318c0db80e307b2281a",
+    "y_mean.npy": "ef5600c8f06d4a9e544671908da1919ad39a7d6b4d32343d9134e5bd45c5aa45",
+    "y_std.npy": "80a75bdaca7c582826cf2af3c00a425c57502f29f77f57e354b19756133537c2"
+  }
+}

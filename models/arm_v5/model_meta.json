@@ -1,0 +1,176 @@
+{
+  "dt": 0.01,
+  "target_mode": "delta_velocity",
+  "hist_q": 1,
+  "hist_qdot": 41,
+  "hist_u": 21,
+  "qdot_stride": 1,
+  "u_stride": 3,
+  "hist_q_sec": 0.0,
+  "hist_qdot_sec": 0.4,
+  "hist_u_sec": 0.6000000000000001,
+  "include_q": true,
+  "time_col": "timestamp",
+  "u_cols": [
+    "combined_cmd_lift",
+    "combined_cmd_tilt",
+    "combined_cmd_scoop"
+  ],
+  "q_cols": [
+    "joint_pos_boom",
+    "joint_pos_arm",
+    "joint_pos_bucket",
+    "carriage_pitch"
+  ],
+  "qdot_cols": [
+    "joint_vel_boom",
+    "joint_vel_arm",
+    "joint_vel_bucket",
+    "carriage_pitch_rate"
+  ],
+  "units": {
+    "timestamp_raw": "s",
+    "joint_position": "rad",
+    "joint_velocity": "rad/s",
+    "command": "normalized_-1_to_1"
+  },
+  "model": {
+    "hidden": [
+      512,
+      512,
+      384
+    ],
+    "activation": "relu",
+    "in_dim": 231,
+    "out_dim": 4,
+    "target": "delta_velocity"
+  },
+  "version": "claude-v5",
+  "learned_carriage": true,
+  "simulation_joint_names": [
+    "revolute_lift",
+    "revolute_tilt",
+    "revolute_tool",
+    "revolute_carriage_pitch"
+  ],
+  "training": {
+    "data": "data_clean\\claude",
+    "test_seen": false,
+    "dropped_motion": "carriage_roll",
+    "name": "full_a",
+    "seed": 920,
+    "vel_hist_s": 0.4,
+    "cmd_hist_s": 0.6,
+    "cmd_stride_s": 0.03,
+    "pos_hist_s": 0.0,
+    "hidden": [
+      512,
+      512,
+      384
+    ],
+    "activation": "relu",
+    "target_mode": "delta_velocity",
+    "label": "smooth21",
+    "mixture": true,
+    "legacy_fraction": 0.5,
+    "init": "arm_v4",
+    "pretrain_epochs": 40,
+    "pretrain_lr": 0.001,
+    "pretrain_batch": 4096,
+    "pretrain_wd": 0.0001,
+    "steps": 12000,
+    "batch": 512,
+    "horizon": 100,
+    "horizon_schedule": [
+      [
+        0,
+        100
+      ],
+      [
+        5000,
+        200
+      ],
+      [
+        9000,
+        300
+      ]
+    ],
+    "lr": 3e-05,
+    "lr_floor": 0.05,
+    "grad_clip": 2.0,
+    "ema": 0.999,
+    "w_pos": 2.0,
+    "w_rest": 0.2,
+    "w_closed": 0.5,
+    "joint_weights": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "angle_scale": "per_joint",
+    "quiet_fraction": 0.0,
+    "rest_rollout_fraction": 0.0,
+    "bucket_fraction": 0.0,
+    "teachers": [],
+    "w_distill": 0.0,
+    "eval_every": 1000,
+    "graph": true,
+    "notes": "Round 1's winning recipe on the full dataset, twice the budget",
+    "phase": "recurrent",
+    "best_step": 7000,
+    "weights": "ema",
+    "metrics": {
+      "finite": true,
+      "score": 5.7989592376798145,
+      "new10": {
+        "finite": true,
+        "cases": 64,
+        "path_deg": 1.7778415717285492,
+        "endpoint_deg": 2.8744432772912,
+        "per_joint_endpoint_deg": [
+          1.5060601234436035,
+          2.506054401397705,
+          4.611215114593506
+        ],
+        "endpoint_p95_deg": 6.286127463467623,
+        "pitch_mae_deg": 0.038878170467439827,
+        "pitch_velocity_rmse_deg_s": 0.6348477272192908
+      },
+      "new30": {
+        "finite": true,
+        "cases": 32,
+        "path_deg": 3.3181840190808263,
+        "endpoint_deg": 5.820271849805965,
+        "per_joint_endpoint_deg": [
+          1.7990081310272217,
+          5.920064449310303,
+          9.741740226745605
+        ],
+        "endpoint_p95_deg": 15.124079341422773,
+        "pitch_mae_deg": 0.07419106222941234,
+        "pitch_velocity_rmse_deg_s": 0.6021534259314381
+      },
+      "legacy10": {
+        "finite": true,
+        "cases": 64,
+        "path_deg": 2.3294351626592023,
+        "endpoint_deg": 3.790179545919503,
+        "per_joint_endpoint_deg": [
+          1.7830363512039185,
+          4.36184549331665,
+          5.225656032562256
+        ],
+        "endpoint_p95_deg": 9.230549017013367,
+        "pitch_mae_deg": 0.04696164932435033,
+        "pitch_velocity_rmse_deg_s": 0.503011736024822
+      },
+      "rest": {
+        "finite": true,
+        "rest_deg": 0.8745637815897607,
+        "rest_worst_deg": 4.167890714568501,
+        "rest_pitch_deg": 0.0368983394179018
+      }
+    }
+  }
+}

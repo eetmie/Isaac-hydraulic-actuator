@@ -55,7 +55,7 @@ def test_default_release_selects_v4_direct_pitch():
     assert args.integration == "direct" and args.physics_substeps == 1
 
 
-@pytest.mark.parametrize("name", ["arm_v4", "slew"])
+@pytest.mark.parametrize("name", ["arm_v4", "arm_v5", "slew"])
 def test_release_hashes(name):
     folder = ROOT / "models" / name
     manifest = json.loads((folder / "release_manifest.json").read_text())

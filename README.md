@@ -1,6 +1,6 @@
 # Learned hydraulic actuators for Isaac Lab
 
-A small excavator demo driven by learned hydraulic dynamics: **V4 for boom, arm,
+A small excavator demo driven by learned hydraulic dynamics: **V5 for boom, arm,
 bucket and carriage pitch**, plus an independent **slew MLP**. Both predict velocity
 increments at 100 Hz; the simulator integrates the resulting velocities into joint
 positions.
@@ -14,15 +14,7 @@ Tested with **Isaac Lab 3.0 / Isaac Sim 6.0.1**. Clone this repository into
 run this command **from the Isaac Lab root**:
 
 ```bat
-isaaclab.bat -p scripts/isaac-hydraulic-actuator/sim.py --model scripts\Isaac-hydraulic-actuator\models\arm_v4 --slew-model scripts\Isaac-hydraulic-actuator\models\slew
-```
-
-In PowerShell, prefix the launcher with `.\isaaclab.bat`. Model arguments are
-**directories**, relative to the working directory. V4 and slew are also the
-defaults, so the shorter command works too:
-
-```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\sim.py
+isaaclab.bat -p scripts/isaac-hydraulic-actuator/sim.py --model scripts\Isaac-hydraulic-actuator\models\arm_v5 --slew-model scripts\Isaac-hydraulic-actuator\models\slew
 ```
 
 The Kit window opens in NN mode. Connect an Xbox-compatible controller:
@@ -36,17 +28,9 @@ The Kit window opens in NN mode. Connect an Xbox-compatible controller:
 | A | Toggle learned hydraulics / manual joint velocities |
 | B | Reset to the starting pose |
 
-The sticks have a 30% dead zone. Add `--tool gripper` for the other included
-asset; the additional gripper joints remain at their default pose. Without a
-controller, valve commands remain zero. A short headless check is:
-
-```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\sim.py --viz none --max_steps 300
-```
-
 ## Example rollouts
 
-![V4 free-running rollouts against recorded IMU angles](media/example_rollout.png)
+![V5 free-running rollouts against recorded IMU angles](media/example_rollout.png)
 
 Three fixed 10-second windows from the new held-out recording. Each rollout uses
 measured initial history and recorded valve commands, then feeds back its own
@@ -60,12 +44,15 @@ Note that I'm using hobby grade, uncalibrated ISM330 IMU's. Industry grade 3D sy
 
 | Model directory | Motion outputs | Hidden layers | Parameters |
 | --- | --- | --- | ---: |
+| `models/arm_v5` | Boom, arm, bucket, carriage pitch | 512 / 512 / 384, ReLU | 579,972 |
 | `models/arm_v4` | Boom, arm, bucket, carriage pitch | 512 / 512 / 384, ReLU | 579,972 |
 | `models/slew` | Slew | 32 / 32, tanh | 2,145 |
 
 
 | Held-out endpoint MAE | 10 seconds | 30 seconds |
 | --- | ---: | ---: |
+| V5 arm, new IMUs | 2.73° | 5.27° |
+| V5 arm, older IMUs corrected offline | 3.11° | 5.70° |
 | V4 arm, new IMUs | 3.49° | 6.78° |
 | V4 arm, older IMUs corrected offline | 3.71° | 6.17° |
 | Slew (gyro only, tiny dataset!) | 9.23° | 21.11° |
@@ -89,7 +76,7 @@ velocity_next = velocity + model(position, velocity_history, valve_history)
 position_next = position + 0.01 * velocity_next
 ```
 
-V4 selects `direct` integration automatically. The learned joints are written
+V4 and V5 select `direct` integration automatically. The learned joints are written
 directly into simulation; their physical drives and carriage springs are disabled
 so they do not fight the predicted motion. This demo models free motion and does
 not provide a validated contact or digging-force response. Arm limits still apply,
@@ -97,7 +84,7 @@ and a held valve at an end stop cannot induce a learned rebound.
 
 The assets include the tested target-drive gains: arm 2400 N·m/rad and
 120 N·m·s/rad; slew 600 N·m/rad and 40 N·m·s/rad. The alternative `target`
-integration route remains available for compatible three-joint models; V4 requires
+integration route remains available for compatible three-joint models; V4 and V5 require
 `direct`.
 
 For direct Python use, only NumPy and PyTorch are needed. From the Isaac Lab root:
@@ -109,7 +96,7 @@ import numpy as np
 sys.path.insert(0, "scripts/Isaac-hydraulic-actuator")
 from actuators import HydraulicActuatorNet
 
-model = HydraulicActuatorNet("scripts/Isaac-hydraulic-actuator/models/arm_v4", sim_dt=0.01)
+model = HydraulicActuatorNet("scripts/Isaac-hydraulic-actuator/models/arm_v5", sim_dt=0.01)
 model.reset()
 q = np.array([-0.5498, 1.2549, -0.7540, 0.0], dtype=np.float32)  # rad: boom, arm, bucket, pitch
 v = np.zeros(4, dtype=np.float32)                              # rad/s
@@ -127,13 +114,13 @@ one position, one velocity and one valve channel.
 
 - `sim.py`, `sim_common.py`, `endstop_guard.py`: excavator demo and joint configuration.
 - `actuators/`: reusable MLP inference and direct/target integration.
-- `assets/`: self-contained bucket/gripper USDs; V4 selects the pitch-capable `_rocking` variants.
-- `models/`: the selected V4 and slew releases only.
+- `assets/`: self-contained bucket/gripper USDs; V4 and V5 select the pitch-capable `_rocking` variants.
+- `models/`: the selected V4, V5 and slew releases only.
 - `training/`: reusable CSV/LeRobot training, evaluation, and regression checks.
 - `media/`: the README rollout figure.
 
 The generic trainer is a baseline training tool, not the
-complete V4 fine-tuning recipe. To inspect its options or check the release:
+complete V4/V5 fine-tuning recipe. To inspect its options or check the release:
 
 ```powershell
 .\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\training\train.py --help
