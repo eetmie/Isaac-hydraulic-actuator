@@ -6,6 +6,7 @@ data_clean/
 data_bench/
 runs/
 plots/
+logs/
 
 __pycache__/
 *.py[cod]

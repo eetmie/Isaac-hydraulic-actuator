@@ -1,0 +1,25 @@
+{
+  "version": "V5-steady",
+  "parent": "models/arm_v5",
+  "bound": {
+    "gain": 5.0,
+    "axes": [
+      0,
+      1,
+      2
+    ],
+    "rule": "|v_next[j]| <= gain * sum |u[j]| over the command history",
+    "credit": "construction follows models/codex/compile_neutral.py"
+  },
+  "reason": "models/arm_v5 with a closed-valve velocity bound compiled into the network; idle drift is structurally zero instead of 0.94 deg per 60 s",
+  "development_score": 4.913186180513116,
+  "selected_step": 0,
+  "files": {
+    "mlp_state_dict.pt": "325fee07327d34acc50544027274eaf43aeda8da5289cf3eb9455753d79db753",
+    "model_meta.json": "38aa39124c534afb6aaad62d404cd452fc49ab5a6580bb729f9d0c0de968f46e",
+    "x_mean.npy": "d3c9b56e36d25275cbd2ae67f7045f37c2c898a9ffa718ae2d68549f7c3ca382",
+    "x_std.npy": "7bc3a90783b94256d6c187c2196d2c3c24147564802cf318c0db80e307b2281a",
+    "y_mean.npy": "f6de3c44d9a68b92f177301b329900aa282b977016e2b09ddb298e62d86c6f8c",
+    "y_std.npy": "9ea5025cdac62ede1358dbf313b35feaeb67a687d001aca9005d886a2934c32b"
+  }
+}

@@ -28,6 +28,68 @@ The Kit window opens in NN mode. Connect an Xbox-compatible controller:
 | A | Toggle learned hydraulics / manual joint velocities |
 | B | Reset to the starting pose |
 
+## Train the end-effector controller
+
+Step two of the Egli & Hutter recipe: a PPO policy receives a desired bucket-tip
+twist `(X, Z, bucket pitch rate)` and outputs the three valve commands directly.
+The frozen V5 steady actuator network is the plant, so training runs as batched
+Torch on the GPU with no simulator (~75k steps/s with 4096 environments; a
+1,500-iteration run takes about half an hour). From the Isaac Lab root:
+
+```powershell
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\train_controller.py --run_name my_run
+```
+
+Design choices, and the measurement behind each:
+
+- **Carriage rocking is not tracked.** The tracked twist comes from the boom,
+  arm and bucket joints only. Rocking cannot be driven by the valves, and the
+  learned pitch channel rings far longer than the real carriage when started
+  outside the recorded ±0.3° pitch range. Resets therefore start at pitch ≈ 0.
+- **Valve chatter costs reward.** An L1 + L2 penalty on valve change per policy
+  step keeps commands in the range seen in the recordings. Otherwise the policy
+  learns to dither around the deadband and runs the actuator model far outside
+  its data.
+- **Commands match the data.** Recorded tip speeds are mostly 30–150 mm/s, and
+  the valves barely move the arm below |u| ≈ 0.2–0.3. Commands span 10–120 mm/s,
+  are held 1–3 s and slew at 0.25 m/s². A governor keeps them away from joint
+  limits and self-collision (a cached lookup grid).
+- **Hidden plant perturbations.** Each episode draws a valve gain (±10 %),
+  offset (±0.02) and a 0–20 ms transport delay, plus observation noise. The
+  critic sees them; the policy does not. Pass `--no_randomize` for a
+  deterministic baseline.
+- **Position loop outside the policy.** Draw and circle modes command
+  `v_ref + kp·(x_ref − x)` with `kp = 3`, as in the RA-L paper.
+
+Benchmark a checkpoint. It runs held commands with reversals and stops, plus
+quintic-timed circles and lines, under nominal and perturbed valves. Results go
+to CSV/JSON and a figure under `runs/`:
+
+```powershell
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode benchmark --checkpoint scripts\Isaac-hydraulic-actuator\logs\rsl_rl\hydraulic_controller\RUN\model_1499.pt --viz none
+```
+
+Interactive playback in Isaac Sim cruises at 30 mm/s unless `--speed-mm-s` is
+given. The console reports the benchmark's recommended speed when a benchmark
+matches the checkpoint:
+
+```powershell
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode draw --checkpoint ...\model_1499.pt
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode circle --speed-mm-s 40
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode gamepad --speed-mm-s 60
+```
+
+Draw mode holds the starting bucket angle, so only part of the drawing box is
+reachable. The window shades the rest dark and turns a stroke red when it enters
+that area. A rejected stroke keeps its reason on screen and in the console. Draw
+and circle modes also show the planned path and the executed trace in the 3D
+viewport.
+
+Gamepad mode maps the left stick to tip X/Z velocity, right stick X to bucket
+pitch rate, and B to reset. Everything here is free-space motion in simulation;
+digging, contact and the real machine are not validated.
+
+
 ## Example rollouts
 
 ![V5 free-running rollouts against recorded IMU angles](media/example_rollout.png)
@@ -112,10 +174,16 @@ one position, one velocity and one valve channel.
 
 ## Repository layout
 
+For the gyro-history controller, USD-matched bucket deployment profile, fixed-tip
+rotation results and Jetson shadow/robot instructions, see
+[the hardware transfer guide](docs/gyro_transfer.md). Simulation acceptance is
+complete; physical robot acceptance is still pending.
+
 - `sim.py`, `sim_common.py`, `endstop_guard.py`: excavator demo and joint configuration.
 - `actuators/`: reusable MLP inference and direct/target integration.
+- `hydraulic_controller/`, `train_controller.py`, `run_controller.py`: learned valve controller training, benchmark and playback.
 - `assets/`: self-contained bucket/gripper USDs; V4 and V5 select the pitch-capable `_rocking` variants.
-- `models/`: the selected V4, V5 and slew releases only.
+- `models/`: the selected V4, V5 and slew releases, plus `arm_v5_steady`, the controller's plant.
 - `training/`: reusable CSV/LeRobot training, evaluation, and regression checks.
 - `media/`: the README rollout figure.
 
