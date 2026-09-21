@@ -68,6 +68,18 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def portable_path(path: Path) -> str:
+    """Store a path inside this repository relative to its root, so checkpoints survive a move or clone."""
+    path = Path(path).resolve()
+    return path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else str(path)
+
+
+def resolve_path(value: str | Path) -> Path:
+    """Resolve a stored contract path; relative paths are taken from this repository's root."""
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
 def model_fingerprint(model: Path) -> dict[str, str]:
     """Fingerprint all files which determine hydraulic inference."""
     return {
@@ -256,9 +268,9 @@ class HydraulicPlant:
             "version": CONTRACT_VERSION,
             "settings": asdict(self.settings),
             "policy_hz": self.settings.policy_hz,
-            "model_path": str(self.model.path),
+            "model_path": portable_path(self.model.path),
             "model_files": model_fingerprint(self.model.path),
-            "asset_path": str(self.kinematics.path),
+            "asset_path": portable_path(self.kinematics.path),
             "asset_sha256": sha256(self.kinematics.path),
             "joint_names": JOINT_NAMES,
             "tip_path": "/excavator/bucket/ee_tip",

@@ -55,7 +55,8 @@ independently for old samples.
 
 ### Fixed-tip simulation
 
-Checkpoint: `logs/rsl_rl/hydraulic_controller/2026-09-16_20-03-52_gyro_transfer/model_1798.pt`.
+Checkpoint: `logs/rsl_rl/hydraulic_controller/2026-09-16_20-03-52_gyro_transfer/model_1798.pt`,
+shipped as `models/controller_proto/model_1798.pt` with repository-relative paths.
 
 100 cases: five starting poses × five plant variations × two sensor modes ×
 two amplitudes. Each performed three smooth `0 → +amplitude → -amplitude → 0`

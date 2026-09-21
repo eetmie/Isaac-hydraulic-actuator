@@ -61,22 +61,29 @@ Design choices, and the measurement behind each:
 - **Position loop outside the policy.** Draw and circle modes command
   `v_ref + kp·(x_ref − x)` with `kp = 3`, as in the RA-L paper.
 
-Benchmark a checkpoint. It runs held commands with reversals and stops, plus
-quintic-timed circles and lines, under nominal and perturbed valves. Results go
-to CSV/JSON and a figure under `runs/`:
+### Run the draw demo
+
+The prototype controller ships in `models/controller_proto` and is the default,
+so these commands work on a fresh clone without training. They need RSL-RL,
+which `isaaclab.bat --install` includes. From the Isaac Lab root:
 
 ```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode benchmark --checkpoint scripts\Isaac-hydraulic-actuator\logs\rsl_rl\hydraulic_controller\RUN\model_1499.pt --viz none
-```
-
-Interactive playback in Isaac Sim cruises at 30 mm/s unless `--speed-mm-s` is
-given. The console reports the benchmark's recommended speed when a benchmark
-matches the checkpoint:
-
-```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode draw --checkpoint ...\model_1499.pt
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode draw
 .\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode circle --speed-mm-s 40
 .\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode gamepad --speed-mm-s 60
+```
+
+Playback cruises at 30 mm/s unless `--speed-mm-s` is given. Pass
+`--checkpoint path\to\model_N.pt` to run your own training run instead; the
+console reports the benchmark's recommended speed when a benchmark matches the
+checkpoint.
+
+The benchmark runs held commands with reversals and stops, plus quintic-timed
+circles and lines, under nominal and perturbed valves. Results go to CSV/JSON
+and a figure under `runs/`:
+
+```powershell
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode benchmark --viz none
 ```
 
 Draw mode holds the starting bucket angle, so only part of the drawing box is
@@ -183,7 +190,7 @@ complete; physical robot acceptance is still pending.
 - `actuators/`: reusable MLP inference and direct/target integration.
 - `hydraulic_controller/`, `train_controller.py`, `run_controller.py`: learned valve controller training, benchmark and playback.
 - `assets/`: self-contained bucket/gripper USDs; V4 and V5 select the pitch-capable `_rocking` variants.
-- `models/`: the selected V4, V5 and slew releases, plus `arm_v5_steady`, the controller's plant.
+- `models/`: the selected V4, V5 and slew releases, plus `arm_v5_steady`, the controller's plant, and `controller_proto`, the prototype controller.
 - `training/`: reusable CSV/LeRobot training, evaluation, and regression checks.
 - `media/`: the README rollout figure.
 

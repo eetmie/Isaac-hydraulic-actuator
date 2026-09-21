@@ -28,18 +28,16 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+# The prototype controller shipped with the repository, so the demo runs on a fresh clone.
+DEFAULT_CHECKPOINT = ROOT / "models/controller_proto/model_1798.pt"
+
 
 def resolve_checkpoint(value: str | None) -> Path:
-    """Resolve an explicit checkpoint or the newest standard RSL-RL checkpoint."""
-    if value:
-        path = Path(value).expanduser().resolve()
-        if not path.is_file():
-            raise FileNotFoundError(path)
-        return path
-    candidates = list((ROOT / "logs/rsl_rl/hydraulic_controller").glob("*/model_*.pt"))
-    if not candidates:
-        raise FileNotFoundError("No controller checkpoint found; train first or pass --checkpoint")
-    return max(candidates, key=lambda path: (path.parent.stat().st_mtime, path.stat().st_mtime))
+    """Resolve an explicit checkpoint, else the shipped prototype controller."""
+    path = Path(value).expanduser().resolve() if value else DEFAULT_CHECKPOINT
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    return path
 
 
 DEFAULT_SPEED_MM_S = 30.0
@@ -306,7 +304,9 @@ def entrypoint() -> int:
     from isaaclab.app import AppLauncher
 
     parser = argparse.ArgumentParser(description="Hydraulic end-effector velocity controller")
-    parser.add_argument("--checkpoint", help="RSL-RL model_*.pt; default is the newest local run")
+    parser.add_argument(
+        "--checkpoint", help="RSL-RL model_*.pt; default is the shipped prototype in models/controller_proto"
+    )
     parser.add_argument("--mode", choices=("draw", "circle", "gamepad", "benchmark"), default="draw")
     parser.add_argument(
         "--speed-mm-s",

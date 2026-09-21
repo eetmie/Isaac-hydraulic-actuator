@@ -122,6 +122,31 @@ def test_training_environment_steps_and_resets():
     assert dones.all() and extras["time_outs"].all()
     assert (env.episode_length_buf == 0).all()
     assert env.command[:, :2].norm(dim=1).max() <= cfg.speed_max + 1e-6
+    # New checkpoints must stay loadable after the repository is moved or cloned.
+    assert env.plant.contract()["model_path"] == "models/arm_v5_steady"
+    assert env.plant.contract()["asset_path"] == "assets/excavator_bucket_rocking.usd"
+
+
+@needs_model
+def test_shipped_prototype_controller_loads_from_any_clone():
+    """The demo default must not depend on this machine's paths or local training logs."""
+    pytest.importorskip("rsl_rl")
+    import hashlib
+    import json
+
+    from hydraulic_controller.policy import ControllerPolicy
+
+    folder = ROOT / "models/controller_proto"
+    manifest = json.loads((folder / "release_manifest.json").read_text())
+    for filename, expected in manifest["files"].items():
+        assert hashlib.sha256((folder / filename).read_bytes()).hexdigest() == expected
+    contract = json.loads((folder / "controller_contract.json").read_text())
+    assert not Path(contract["model_path"]).is_absolute()
+    assert not Path(contract["asset_path"]).is_absolute()
+    policy = ControllerPolicy(folder / "model_1798.pt")
+    assert policy.model_path == MODEL and policy.asset_path == ASSET
+    actions = policy(torch.zeros(1, contract["observation_dim"]))
+    assert actions.shape == (1, 3) and torch.isfinite(actions).all()
 
 
 def test_quintic_time_scaling_is_rest_to_rest():

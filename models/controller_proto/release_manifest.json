@@ -1,0 +1,15 @@
+{
+  "version": "controller-proto",
+  "source": "logs/rsl_rl/hydraulic_controller/2026-09-16_20-03-52_gyro_transfer/model_1798.pt",
+  "resumed_from": "logs/rsl_rl/hydraulic_controller/2026-09-15_19-54-48_v8_ent01_nogov_s3/model_1499.pt",
+  "reason": "Gyro-history fine-tune used for the draw demo and the fixed-tip rotation results in docs/gyro_transfer.md",
+  "plant": "models/arm_v5_steady",
+  "asset": "assets/excavator_bucket_rocking.usd",
+  "paths": "controller_contract.json and params/env.yaml store repository-relative paths",
+  "files": {
+    "model_1798.pt": "8c180b80d3b5c78166a67261ee9b4a4048466417642813a11f77dd27186d2673",
+    "controller_contract.json": "67d4415ba9d676c5b5af342d6d84635c821cb805af5612afbffc677688abf4fe",
+    "params/agent.yaml": "76a234571a2fa7a1fe0b8ceac61c00dbbd10be40147ead84d4819366d690b040",
+    "params/env.yaml": "ae34f87eedb4629da1d8a9b7c3a998c9c9ea6ef52491ab45e47e53ee7c26b3c0"
+  }
+}

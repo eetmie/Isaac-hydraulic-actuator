@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from .core import CONTRACT_VERSION, ControllerSettings, model_fingerprint, sha256
+from .core import CONTRACT_VERSION, ControllerSettings, model_fingerprint, resolve_path, sha256
 
 
 class ControllerPolicy:
@@ -25,8 +25,8 @@ class ControllerPolicy:
         if self.contract["version"] != CONTRACT_VERSION or self.contract["action_transform"] != "tanh":
             raise ValueError("Unsupported hydraulic controller checkpoint contract")
         self.settings = ControllerSettings(**self.contract["settings"])
-        self.model_path = Path(self.contract["model_path"])
-        self.asset_path = Path(self.contract["asset_path"])
+        self.model_path = resolve_path(self.contract["model_path"])
+        self.asset_path = resolve_path(self.contract["asset_path"])
         if model_fingerprint(self.model_path) != self.contract["model_files"]:
             raise ValueError("Hydraulic model changed since training; use the checkpoint's original model")
         if sha256(self.asset_path) != self.contract["asset_sha256"]:
