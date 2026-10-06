@@ -115,7 +115,7 @@ def test_float32_gpu_layout_runs_independent_gain_sets():
 
 
 def test_trapezoid_reaches_the_distance_without_exceeding_speed_or_accel():
-    from hydraulic_controller.pid_replay import trapezoid
+    from hydraulic_controller.tasks import trapezoid
 
     t = torch.arange(0, 400) * 0.01
     for distance, speed in ((0.10, 0.07), (0.01, 0.07)):  # trapezoidal, then triangular
@@ -129,7 +129,7 @@ def test_trapezoid_reaches_the_distance_without_exceeding_speed_or_accel():
 def test_dls_step_iterates_onto_the_target():
     from hydraulic_controller.core import DEFAULT_ASSET, HOME
     from hydraulic_controller.kinematics import ExcavatorKinematics
-    from hydraulic_controller.pid_replay import dls_step
+    from hydraulic_controller.tasks import dls_step
 
     kin = ExcavatorKinematics(DEFAULT_ASSET, "cpu")
     q = torch.tensor([HOME])
@@ -141,15 +141,16 @@ def test_dls_step_iterates_onto_the_target():
 
 def test_replay_with_zero_gains_leaves_the_machine_at_rest():
     """With the PID silenced the valves stay neutral and the steady model must not drift."""
+    from hydraulic_controller.closed_loop import metrics, run_single
     from hydraulic_controller.core import DEFAULT_ASSET, DEFAULT_MODEL, HOME
-    from hydraulic_controller.pid_replay import PidGains, ReplayConfig, metrics, run_replay
+    from hydraulic_controller.pid import JointPIDController, PidGains
+    from hydraulic_controller.tasks import TaskConfig
 
     if not DEFAULT_MODEL.exists():
         pytest.skip("V5 steady model artifact is not installed")
-    cfg = ReplayConfig(plants=("nominal",), duration_s=1.5, tail_s=0.5, tip_speeds_m_s=(0.02,))
-    scenarios, traces = run_replay(
-        PidGains([0.0] * 3, [0.0] * 3, [0.0] * 3), cfg, DEFAULT_MODEL, DEFAULT_ASSET, DEVICE
-    )
+    cfg = TaskConfig(plants=("nominal",), duration_s=1.5, tail_s=0.5, tip_speeds_m_s=(0.02,))
+    gains = PidGains([0.0] * 3, [0.0] * 3, [0.0] * 3)
+    scenarios, traces = run_single(JointPIDController(gains), cfg, DEFAULT_MODEL, DEFAULT_ASSET, DEVICE)
     assert torch.equal(traces["u"], torch.zeros_like(traces["u"]))
     assert (traces["q"] - torch.tensor(HOME[:3])).abs().max() < 1e-4
     rows = metrics(cfg, scenarios, traces)

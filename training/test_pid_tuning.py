@@ -4,9 +4,11 @@ import numpy as np
 import pytest
 import torch
 
+from hydraulic_controller.closed_loop import rollout
 from hydraulic_controller.core import DEFAULT_ASSET, DEFAULT_MODEL
-from hydraulic_controller.pid_replay import PidGains, ReplayConfig, Scenario, prepare, rollout
+from hydraulic_controller.pid import JointPIDController, PidGains
 from hydraulic_controller.pid_tuning import CMAES, TuneConfig, score, to_gains, to_vector, vector_to_pid_gains
+from hydraulic_controller.tasks import Scenario, TaskConfig, prepare
 
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 
@@ -46,7 +48,7 @@ def test_score_mixes_the_plant_mean_with_the_worst_plant():
 @pytest.mark.skipif(not DEFAULT_MODEL.exists(), reason="V5 steady model artifact is not installed")
 def test_batched_candidates_score_like_single_runs():
     """Candidate c in a batch must see exactly what it would see alone (no cross-talk between rows)."""
-    cfg = ReplayConfig(
+    cfg = TaskConfig(
         plants=("nominal", "slow_valves"),
         duration_s=2.0,
         tail_s=0.5,
@@ -58,8 +60,10 @@ def test_batched_candidates_score_like_single_runs():
     kp = torch.tensor([[10.0, 10.0, 5.0], [20.0, 5.0, 12.0]], device=DEVICE)
     ki = torch.tensor([[0.4, 0.4, 0.25], [1.0, 0.1, 2.0]], device=DEVICE)
     kd = torch.tensor([[0.0, 0.0, 0.0], [0.05, 0.0, 0.1]], device=DEVICE)
-    batched, _ = rollout(prep, kp, ki, kd, base, seed=3)
+    batched, _ = rollout(prep, JointPIDController(base, kp, ki, kd), copies=2, seed=3)
     for c in range(2):
-        alone, _ = rollout(prep, kp[c : c + 1], ki[c : c + 1], kd[c : c + 1], base, seed=3)
+        alone, _ = rollout(
+            prep, JointPIDController(base, kp[c : c + 1], ki[c : c + 1], kd[c : c + 1]), seed=3
+        )
         for key, value in alone.items():
-            torch.testing.assert_close(batched[key][c], value[0], rtol=1e-4, atol=1e-5)
+            torch.testing.assert_close(batched[key][c], value[0], rtol=1e-4, atol=1e-5, equal_nan=True)

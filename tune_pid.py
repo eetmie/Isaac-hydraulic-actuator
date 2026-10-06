@@ -24,9 +24,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-# Central working poses as tip (x, z) [m] at the HOME bucket angle, besides HOME itself: tucked in, low, high.
-DEFAULT_STARTS = ((0.42, -0.05), (0.50, -0.25), (0.55, 0.12))
-
 
 def pid_yaml(gains) -> str:
     lines = ["pid:"]
@@ -42,18 +39,11 @@ def pid_yaml(gains) -> str:
 
 
 def main(argv=None) -> int:
+    from hydraulic_controller.closed_loop import metrics, plot_report, run_single, write_report
     from hydraulic_controller.core import DEFAULT_ASSET, DEFAULT_MODEL
-    from hydraulic_controller.pid_replay import (
-        PID_JOINTS,
-        ReplayConfig,
-        load_robot_gains,
-        metrics,
-        plot_report,
-        prepare,
-        run_replay,
-        write_report,
-    )
+    from hydraulic_controller.pid import JointPIDController, load_robot_gains
     from hydraulic_controller.pid_tuning import TuneConfig, breakdown, tune
+    from hydraulic_controller.tasks import PID_JOINTS, WORKING_STARTS, TaskConfig, prepare
 
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -76,16 +66,16 @@ def main(argv=None) -> int:
     control_yaml = args.robot_repo / "configuration_files/profiles" / args.robot / "control_config.yaml"
     base = load_robot_gains(control_yaml)
     tune_cfg = TuneConfig(popsize=args.popsize, generations=args.generations, seed=args.seed)
-    replay_cfg = ReplayConfig(start_tips=DEFAULT_STARTS, sensor_noise_deg=args.sensor_noise_deg)
+    task_cfg = TaskConfig(start_tips=WORKING_STARTS, sensor_noise_deg=args.sensor_noise_deg)
     out_dir = args.out / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{args.run_name}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     start = time.perf_counter()
-    prep = prepare(replay_cfg, args.model, DEFAULT_ASSET, args.device, base.ik_lambda)
+    prep = prepare(task_cfg, args.model, DEFAULT_ASSET, args.device, base.ik_lambda)
     keep = prep.feasible
     print(
         f"[INFO] {int(keep.sum())} of {len(prep.scenarios)} scenarios are feasible and kept "
-        f"({len(DEFAULT_STARTS) + 1} start poses x {len(replay_cfg.plants)} plants), "
+        f"({len(WORKING_STARTS) + 1} start poses x {len(task_cfg.plants)} plants), "
         f"prepared in {time.perf_counter() - start:.0f} s"
     )
     prep = prep.subset(keep)
@@ -138,7 +128,7 @@ def main(argv=None) -> int:
                     for family, key in base_table
                 },
                 "scenarios": [s.name + "@" + s.plant for s in prep.scenarios],
-                "replay_config": asdict(replay_cfg),
+                "task_config": asdict(task_cfg),
                 "tune_config": asdict(tune_cfg),
                 "model": str(args.model),
                 "control_yaml": str(control_yaml),
@@ -149,11 +139,13 @@ def main(argv=None) -> int:
     plot_convergence(out_dir / "convergence.png", result)
 
     # The standard HOME replay, noise-free, before and after: the same report replay_pid.py writes.
-    plain = ReplayConfig()
+    plain = TaskConfig()
     for name, gains in (("robot", base), ("tuned", tuned)):
-        scenarios, traces = run_replay(gains, plain, args.model, DEFAULT_ASSET, args.device)
+        scenarios, traces = run_single(
+            JointPIDController(gains), plain, args.model, DEFAULT_ASSET, args.device, gains.ik_lambda
+        )
         rows = metrics(plain, scenarios, traces)
-        write_report(out_dir / f"replay_{name}", gains, plain, args.model, rows, traces)
+        write_report(out_dir / f"replay_{name}", {"pid": asdict(gains)}, plain, args.model, rows, traces)
         plot_report(out_dir / f"replay_{name}" / "replay.png", plain, scenarios, traces)
 
     print(f"\n{pid_yaml(tuned)}")

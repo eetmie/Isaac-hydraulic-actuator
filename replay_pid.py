@@ -33,16 +33,12 @@ def parse_gains(values: list[str]) -> dict[str, tuple[float, float, float]]:
 
 
 def main(argv=None) -> int:
+    from dataclasses import asdict
+
+    from hydraulic_controller.closed_loop import metrics, plot_report, run_single, write_report
     from hydraulic_controller.core import DEFAULT_ASSET, DEFAULT_MODEL
-    from hydraulic_controller.pid_replay import (
-        PID_JOINTS,
-        ReplayConfig,
-        load_robot_gains,
-        metrics,
-        plot_report,
-        run_replay,
-        write_report,
-    )
+    from hydraulic_controller.pid import JointPIDController, load_robot_gains
+    from hydraulic_controller.tasks import PID_JOINTS, TaskConfig
 
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -65,11 +61,12 @@ def main(argv=None) -> int:
     for j, joint in enumerate(PID_JOINTS):
         print(f"       {joint:6s} kp={gains.kp[j]:g} ki={gains.ki[j]:g} kd={gains.kd[j]:g}")
 
-    cfg = ReplayConfig()
-    scenarios, traces = run_replay(gains, cfg, args.model, DEFAULT_ASSET, args.device)
+    cfg = TaskConfig()
+    controller = JointPIDController(gains)
+    scenarios, traces = run_single(controller, cfg, args.model, DEFAULT_ASSET, args.device, gains.ik_lambda)
     rows = metrics(cfg, scenarios, traces)
     out_dir = args.out / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{args.run_name}"
-    write_report(out_dir, gains, cfg, args.model, rows, traces)
+    write_report(out_dir, {"pid": asdict(gains)}, cfg, args.model, rows, traces)
     plot_report(out_dir / "replay.png", cfg, scenarios, traces)
 
     def fmt(value, spec=".1f"):

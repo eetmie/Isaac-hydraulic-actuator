@@ -1,6 +1,6 @@
 """Tune the robot's joint PID gains with CMA-ES on the learned plant.
 
-Every candidate runs every scenario in one batch (``pid_replay.rollout``), so a generation of 32 gain sets over
+Every candidate runs every scenario in one batch (``closed_loop.rollout``), so a generation of 32 gain sets over
 ~600 scenarios is a single 700-tick rollout. The search runs in log-gain space inside a box, starting from the
 robot's current gains. Only scenarios a perfect controller could follow take part: the reference path stays
 inside the limits and the plant can reach its speed (``Prepared.feasible``). Reach edges, where tracking speed
@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-from .pid_replay import COST_TERMS, PID_JOINTS, PidGains, Prepared, rollout
+from .closed_loop import COST_TERMS, rollout
+from .pid import JointPIDController, PidGains
+from .tasks import PID_JOINTS, Prepared
 
 GAIN_NAMES = tuple(f"{joint}_{term}" for joint in PID_JOINTS for term in ("kp", "ki", "kd"))
 
@@ -130,7 +132,8 @@ def evaluate(prep: Prepared, vectors: np.ndarray, base: PidGains, cfg: TuneConfi
     """Cost [C] and cost terms of log-gain candidates; out-of-box candidates are clipped and penalized."""
     lo, hi = bounds_arrays(cfg)
     clipped = np.clip(vectors, lo, hi)
-    terms, _ = rollout(prep, *to_gains(clipped, prep.q0.device), base, seed=seed)
+    controller = JointPIDController(base, *to_gains(clipped, prep.q0.device))
+    terms, _ = rollout(prep, controller, copies=len(vectors), seed=seed)
     cost = score(prep, terms, cfg).cpu().numpy()
     cost += cfg.out_of_box_penalty * ((vectors - clipped) ** 2).sum(1)
     return cost, terms

@@ -1,15 +1,27 @@
-"""Batched Torch port of the robot's joint PID (kaivuriprokkis ``modules/pid.py``).
+"""Batched Torch port of the robot's joint PID (kaivuriprokkis ``modules/pid.py``) and its control loop.
 
 Gains are tensors broadcast to ``[envs, joints]``, so every environment can run its own tuning. The arithmetic
 follows ``PIDController.compute`` line for line, so gains tuned here can go straight into the robot's
 ``control_config.yaml``; ``training/test_pid.py`` checks this against the robot file itself.
+
+``JointPIDController`` is the robot's whole loop as a ``closed_loop`` controller: for tip lines the
+damped-least-squares IK step ``dq = J^T (J J^T + lambda^2 I)^-1 e`` toward the reference pose, ``q + dq`` as the
+PID target (so the PID sees ``dq``), then the PID; joint scenarios feed the joint reference straight in. Adaptive
+damping and joint-limit repulsion are left out: lambda barely moves (0.001 to 0.002), and the task paths stay
+clear of the repulsion margins.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import torch
+
+from .tasks import DT, dls_step
+
+ROBOT_DERIV_FILTER_TAU = 0.10  # PIDController's default; ExcavatorController does not override it
 
 
 class BatchedPID:
@@ -92,3 +104,76 @@ def robot_joint_command(pid: BatchedPID, target: torch.Tensor, q: torch.Tensor, 
     """
     error = torch.atan2(torch.sin(target - q), torch.cos(target - q))
     return pid.compute(torch.zeros_like(error), -error, dt)
+
+
+@dataclass
+class PidGains:
+    """Per-joint (boom, arm, bucket) gains in robot units: valve fraction per rad, per rad*s, per rad/s."""
+
+    kp: list[float]
+    ki: list[float]
+    kd: list[float]
+    deriv_filter_tau: list[float] = field(default_factory=lambda: [ROBOT_DERIV_FILTER_TAU] * 3)
+    output_limits: tuple[float, float] = (-1.0, 1.0)
+    ik_lambda: float = 0.001
+
+
+def load_robot_gains(control_yaml: Path) -> PidGains:
+    """Read boom/arm/bucket gains, output limits and the DLS lambda from a robot ``control_config.yaml``."""
+    import yaml
+
+    cfg = yaml.safe_load(Path(control_yaml).read_text())
+    pid = [cfg["pid"][f"joint{i}"] for i in (1, 2, 3)]
+    ctrl = cfg.get("controller", {})
+    ik = cfg.get("ik", {})
+    if ik.get("method", "dls") != "dls":
+        raise ValueError(f"the sim loop models the dls IK method, the robot is set to {ik['method']!r}")
+    return PidGains(
+        kp=[float(j["kp"]) for j in pid],
+        ki=[float(j["ki"]) for j in pid],
+        kd=[float(j["kd"]) for j in pid],
+        output_limits=(float(ctrl.get("output_limits_min", -1.0)), float(ctrl.get("output_limits_max", 1.0))),
+        ik_lambda=float(ik.get("params", {}).get("lambda_val", 0.001)),
+    )
+
+
+class JointPIDController:
+    """The robot's IK + joint-PID loop for ``closed_loop.rollout``.
+
+    ``kp``/``ki``/``kd`` default to ``gains``; pass [C, 3] tensors to give each of ``C`` copies of the scenario
+    set its own candidate (rows ``c * S + s``). Filter time constant, output limits and lambda come from ``gains``.
+    """
+
+    def __init__(self, gains: PidGains, kp=None, ki=None, kd=None):
+        self.gains = gains
+        self.candidates = [kp, ki, kd]
+
+    def reset(self, task) -> None:
+        device = task.q0.device
+        self.task = task
+        gains = [
+            torch.as_tensor(value if value is not None else [default], dtype=torch.float32, device=device)
+            for value, default in zip(self.candidates, (self.gains.kp, self.gains.ki, self.gains.kd))
+        ]
+        per_copy = task.count // len(gains[0])
+        kp, ki, kd = (g.repeat_interleave(per_copy, 0) for g in gains)
+        lo, hi = self.gains.output_limits
+        self.pid = BatchedPID(
+            task.count,
+            3,
+            kp,
+            ki,
+            kd,
+            deriv_filter_tau=torch.tensor(self.gains.deriv_filter_tau, device=device),
+            min_output=lo,
+            max_output=hi,
+            device=device,
+        )
+        self.pose0 = task.kin.pose_jacobian(task.q0)[0]
+
+    def __call__(self, k: int, q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        task = self.task
+        tip_target = torch.where(task.is_tip[:, None], task.tip_ref[k], self.pose0)
+        ik_target = q[:, :3] + dls_step(task.kin, q, tip_target, self.gains.ik_lambda)
+        target = torch.where(task.is_tip[:, None], ik_target, task.q_ref[k])
+        return robot_joint_command(self.pid, target, q[:, :3], DT)

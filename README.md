@@ -212,7 +212,7 @@ complete; physical robot acceptance is still pending.
 - `sim.py`, `sim_common.py`, `endstop_guard.py`: excavator demo and joint configuration.
 - `actuators/`: reusable MLP inference and direct/target integration.
 - `hydraulic_controller/`, `train_controller.py`, `run_controller.py`: learned valve controller training, benchmark and playback.
-- `measure_speeds.py`, `replay_pid.py`, `tune_pid.py` (`hydraulic_controller/speed_limits.py`, `pid*.py`): robot PID replay and tuning.
+- `measure_speeds.py`, `replay_pid.py`, `tune_pid.py`: robot PID replay and tuning. `hydraulic_controller/tasks.py` and `closed_loop.py` hold the controller-neutral scenarios and loop; `pid.py`, `pid_tuning.py` and `speed_limits.py` the PID side.
 - `assets/`: self-contained bucket/gripper USDs; V4 and V5 select the pitch-capable `_rocking` variants.
 - `models/`: the selected V4, V5 and slew releases, plus `arm_v5_steady`, the controller's plant, and `controller_proto`, the prototype controller.
 - `training/`: reusable CSV/LeRobot training, evaluation, and regression checks.
