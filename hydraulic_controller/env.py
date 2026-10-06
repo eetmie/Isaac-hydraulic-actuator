@@ -21,6 +21,7 @@ from .core import (
     ControllerSettings,
     HydraulicPlant,
     measure_joint_speed_limits,
+    resolve_path,
 )
 from .kinematics import CommandGovernor, ExcavatorKinematics
 
@@ -30,6 +31,8 @@ class HydraulicControlEnvCfg:
     """Task, reward and randomization settings. Units: m, rad, s unless stated."""
 
     model_path: str = str(DEFAULT_MODEL)
+    # Further actuator networks; environment i runs model i % (1 + len(extra)), so no policy fits a single twin.
+    extra_model_paths: tuple[str, ...] = ()
     asset_path: str = str(DEFAULT_ASSET)
     num_envs: int = 4096
     device: str = "cuda:0"
@@ -44,6 +47,17 @@ class HydraulicControlEnvCfg:
     zero_speed_prob: float = 0.1
     zero_pitch_rate_prob: float = 0.4
     command_hold_s: tuple[float, float] = (1.0, 3.0)
+    # "uniform": speed_min..speed_max regardless of pose. "achievable": a fraction of what the plant can reach at
+    # the current pose in that direction (speed_limits.SpeedTable, bucket angle held), mostly well inside the limit
+    # and with over_limit_prob just beyond it, clipped to [achievable_speed_min, speed_max].
+    command_speed_mode: str = "uniform"
+    uniform_mix_prob: float = (
+        0.3  # in "achievable" mode, this share still draws speed_min..speed_max, pose-blind
+    )
+    achievable_fraction: tuple[float, float] = (0.05, 0.9)
+    over_limit_prob: float = 0.1
+    over_limit_fraction: tuple[float, float] = (1.0, 1.3)
+    achievable_speed_min: float = 0.002
     command_step_prob: float = 0.1
     linear_accel: float = 0.25
     angular_accel: float = 1.0
@@ -62,6 +76,10 @@ class HydraulicControlEnvCfg:
     action_rate_l2: float = 1.0
     action_rate_scale: tuple[float, float] = (0.2, 1.0)
     effort: float = 0.02
+    # Linear error penalties (per speed_max / pitch_rate_max of error). The Gaussian tracking terms fade beyond ~2
+    # sigma; these keep a gradient when a command is out of reach, so the compromise there is learned, not random.
+    linear_error_weight: float = 0.0
+    angular_error_weight: float = 0.0
     termination_penalty: float = 10.0
 
     # Hidden per-episode plant perturbations and observation noise (sim-to-real robustness).
@@ -109,7 +127,18 @@ class HydraulicControlEnv(VecEnv):
 
         self.kin = ExcavatorKinematics(cfg.asset_path, self.device)
         self.kin.build_collision_grid()
-        self.plant = HydraulicPlant(cfg.model_path, self.kin, self.num_envs, self.device, self.settings)
+        extra = tuple(resolve_path(path) for path in cfg.extra_model_paths)
+        self.plant = HydraulicPlant(
+            cfg.model_path, self.kin, self.num_envs, self.device, self.settings, extra
+        )
+        self.speed_table = None
+        if cfg.command_speed_mode == "achievable":
+            from .core import ROOT
+            from .speed_limits import SpeedTable
+
+            self.speed_table = SpeedTable.load_or_build(cfg.model_path, self.kin, ROOT / "runs/speed_tables")
+        elif cfg.command_speed_mode != "uniform":
+            raise ValueError(f"unknown command_speed_mode {cfg.command_speed_mode!r}")
         from .observations import SensorObservation, SensorSettings
 
         self.sensors = None
@@ -199,6 +228,10 @@ class HydraulicControlEnv(VecEnv):
         )
         reward -= rate_scale * (
             cfg.action_rate_l1 * du.abs().sum(1) + cfg.action_rate_l2 * du.square().sum(1)
+        )
+        reward -= self.time_scale * (
+            cfg.linear_error_weight * speed_error / cfg.speed_max
+            + cfg.angular_error_weight * angle_rate_error / cfg.pitch_rate_max
         )
         terminated = plant.invalid | plant.limit_hit | collided
         reward -= cfg.termination_penalty * terminated.float()
@@ -320,7 +353,20 @@ class HydraulicControlEnv(VecEnv):
         cfg = self.cfg
         count = len(ids)
         direction = torch.rand(count, device=self.device) * (2 * torch.pi)
-        speed = cfg.speed_min + (cfg.speed_max - cfg.speed_min) * torch.rand(count, device=self.device)
+        if self.speed_table is None:
+            speed = cfg.speed_min + (cfg.speed_max - cfg.speed_min) * torch.rand(count, device=self.device)
+        else:
+            reach = self.speed_table.lookup(self.plant.q[ids], direction)
+            low, high = cfg.achievable_fraction
+            fraction = low + (high - low) * torch.rand(count, device=self.device)
+            over = torch.rand(count, device=self.device) < cfg.over_limit_prob
+            low, high = cfg.over_limit_fraction
+            fraction[over] = low + (high - low) * torch.rand(int(over.sum()), device=self.device)
+            speed = (fraction * reach).clamp(cfg.achievable_speed_min, cfg.speed_max)
+            # Keep covering pose-blind requests (static-speed paths, gamepad), far beyond the limit at hard poses.
+            blind = torch.rand(count, device=self.device) < cfg.uniform_mix_prob
+            uniform = cfg.speed_min + (cfg.speed_max - cfg.speed_min) * torch.rand(count, device=self.device)
+            speed = torch.where(blind, uniform, speed)
         speed *= torch.rand(count, device=self.device) >= cfg.zero_speed_prob
         angular = (2 * torch.rand(count, device=self.device) - 1) * cfg.pitch_rate_max
         angular *= torch.rand(count, device=self.device) >= cfg.zero_pitch_rate_prob

@@ -369,3 +369,92 @@ def plot_report(out_dir: Path, result: dict, cfg: SpeedMapConfig) -> None:
         axes[j].grid(alpha=0.3)
     fig.savefig(out_dir / "valve_curves.png", dpi=110)
     plt.close(fig)
+
+
+class SpeedTable:
+    """Achievable tip speed [m/s] over a boom x arm x bucket grid and tip directions, bucket angle held.
+
+    The pre-flight answer to "how fast may I ask for this?" anywhere in joint space. It is
+    ``achievable_tip_speeds`` on a regular grid, interpolated trilinearly over the joints and linearly (and
+    circularly) over the direction. Grid points that are invalid poses are still solved: speed does not care about
+    self-collision, and the interpolation stays smooth at the edges.
+    """
+
+    def __init__(self, axes: list[torch.Tensor], directions_deg: torch.Tensor, speed: torch.Tensor):
+        self.axes, self.directions_deg, self.speed = axes, directions_deg, speed  # speed [B, A, K, D]
+
+    @classmethod
+    @torch.no_grad()
+    def build(cls, model: Path, kin, points: int = 8, directions: int = 12, chunk: int = 24) -> "SpeedTable":
+        device = kin.limits.device
+        margin = 0.05
+        axes = [
+            torch.linspace(lo + margin, hi - margin, points, device=device)
+            for lo, hi in kin.limits[:3].tolist()
+        ]
+        grid = torch.stack(torch.meshgrid(*axes, indexing="ij"), dim=-1).reshape(-1, 3)
+        poses = torch.cat((grid, torch.zeros(len(grid), 1, device=device)), dim=1)
+        degrees = torch.arange(directions, device=device) * (360.0 / directions)
+        cfg = SpeedMapConfig(
+            directions_deg=tuple(degrees.tolist()), random_valves=256, speed_ladder_mm_s=(5.0, 250.0, 24)
+        )
+        vectors = direction_vectors(cfg.directions_deg, device)
+        speed = torch.cat(
+            [
+                achievable_tip_speeds(model, kin, poses[i : i + chunk], vectors, cfg)[0]
+                for i in range(0, len(poses), chunk)
+            ]
+        )
+        return cls(axes, degrees, speed.reshape(points, points, points, directions))
+
+    @classmethod
+    def load_or_build(
+        cls, model: Path, kin, cache_dir: Path, points: int = 8, directions: int = 12
+    ) -> "SpeedTable":
+        key = f"{sha256(Path(model) / 'mlp_state_dict.pt')[:16]}_{sha256(Path(kin.path))[:8]}_{points}x{directions}.pt"
+        path = Path(cache_dir) / key
+        device = kin.limits.device
+        if path.exists():
+            data = torch.load(path, map_location=device)
+            return cls(
+                [a.to(device) for a in data["axes"]],
+                data["directions_deg"].to(device),
+                data["speed"].to(device),
+            )
+        table = cls.build(model, kin, points, directions)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "axes": table.axes,
+                "directions_deg": table.directions_deg,
+                "speed": table.speed,
+                "model": str(model),
+            },
+            path,
+        )
+        return table
+
+    def lookup(self, q: torch.Tensor, direction_rad: torch.Tensor) -> torch.Tensor:
+        """Achievable speed [m/s] at angles q [N, >=3] rad toward tip directions [N] rad (from +X toward +Z)."""
+        weights, corners = [], []
+        for j, axis in enumerate(self.axes):
+            x = ((q[:, j] - axis[0]) / (axis[1] - axis[0])).clamp(0, len(axis) - 1 - 1e-6)
+            lower = x.floor().long()
+            corners.append(lower)
+            weights.append(x - lower)
+        bins = len(self.directions_deg)
+        d = (torch.rad2deg(direction_rad) % 360.0) / (360.0 / bins)
+        d0 = d.floor().long() % bins
+        wd = d - d.floor()
+        result = torch.zeros(len(q), device=q.device)
+        for corner in range(8):
+            offset = [(corner >> j) & 1 for j in range(3)]
+            w = torch.ones(len(q), device=q.device)
+            index = []
+            for j in range(3):
+                w = w * (weights[j] if offset[j] else 1 - weights[j])
+                index.append(corners[j] + offset[j])
+            near = self.speed[index[0], index[1], index[2], d0]
+            far = self.speed[index[0], index[1], index[2], (d0 + 1) % bins]
+            result += w * ((1 - wd) * near + wd * far)
+        return result

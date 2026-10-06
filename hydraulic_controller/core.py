@@ -140,6 +140,54 @@ class HydraulicModelBatch:
         return v + prediction if src.target_mode == "delta_velocity" else prediction
 
 
+class MixedModelBatch(HydraulicModelBatch):
+    """Several actuator networks behind one batch: environment ``i`` always runs model ``i % len(models)``.
+
+    The histories stay shared, so every model must use the same input layout as the first one (checked). Training
+    against several twins keeps a policy from fitting one network's quirks; the first model stays the reference
+    for observations and the checkpoint contract.
+    """
+
+    def __init__(self, models, count: int, device: str, dt: float = 0.01):
+        super().__init__(models[0], count, device, dt)
+        self.paths = [Path(m).resolve() for m in models]
+        self.sources, self.nets = [self.source], [self.net]
+        layout = ("hist_q", "hist_qdot", "hist_u", "qdot_stride", "u_stride", "target_mode", "_has_q")
+        for model in models[1:]:
+            other = HydraulicModelBatch(model, 1, device, dt)
+            if any(getattr(other.source, key) != getattr(self.source, key) for key in layout):
+                raise ValueError(f"{model} uses a different input layout than {models[0]}")
+            if other.meta.get("simulation_joint_names") != self.meta.get("simulation_joint_names"):
+                raise ValueError(f"{model} drives different joints than {models[0]}")
+            self.sources.append(other.source)
+            self.nets.append(other.net)
+        self.group = torch.arange(count, device=device) % len(models)
+
+    @torch.no_grad()
+    def predict(self, q: torch.Tensor, v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """``HydraulicModelBatch.predict``, with each environment's own network."""
+        for history, current in ((self.q_history, q), (self.v_history, v), (self.u_history, u)):
+            history[:, 1:] = history[:, :-1].clone()
+            history[:, 0] = current
+        self.q_history[~self.primed] = q[~self.primed, None, :]
+        self.primed[:] = True
+        src = self.source
+        features = []
+        if src._has_q:
+            features.append(self.q_history.flatten(1))
+        if src.hist_qdot:
+            features.append(self.v_history[:, :: src.qdot_stride].flatten(1))
+        features.append(self.u_history[:, :: src.u_stride].flatten(1))
+        x = torch.cat(features, dim=1)
+        prediction = torch.empty_like(v)
+        for k, (source, net) in enumerate(zip(self.sources, self.nets)):
+            rows = self.group == k
+            prediction[rows] = (
+                net((x[rows] - source._x_mean) / source._x_std) * source._y_std + source._y_mean
+            )
+        return v + prediction if src.target_mode == "delta_velocity" else prediction
+
+
 class HydraulicPlant:
     """Authoritative learned state, shared by training, benchmark and Isaac playback.
 
@@ -149,6 +197,8 @@ class HydraulicPlant:
 
     ``speed_scale`` multiplies the model's joint velocities before integration, while the network keeps its own
     unscaled history. It emulates the measured model-vs-machine speed spread without leaving the model's data range.
+
+    ``extra_models`` spreads the environments over further actuator networks (see ``MixedModelBatch``).
     """
 
     def __init__(
@@ -158,12 +208,16 @@ class HydraulicPlant:
         count: int,
         device: str,
         settings: ControllerSettings | None = None,
+        extra_models: tuple = (),
     ):
         self.settings = settings or ControllerSettings()
         self.device = device
         self.count = count
         self.kinematics = kinematics
-        self.model = HydraulicModelBatch(model, count, device, self.settings.dt)
+        if extra_models:
+            self.model = MixedModelBatch([model, *extra_models], count, device, self.settings.dt)
+        else:
+            self.model = HydraulicModelBatch(model, count, device, self.settings.dt)
         self.q = torch.tensor(HOME, device=device).repeat(count, 1)
         self.v = torch.zeros_like(self.q)
         self._v_model = torch.zeros_like(self.q)
@@ -270,6 +324,11 @@ class HydraulicPlant:
             "policy_hz": self.settings.policy_hz,
             "model_path": portable_path(self.model.path),
             "model_files": model_fingerprint(self.model.path),
+            **(
+                {"extra_model_paths": [portable_path(path) for path in self.model.paths[1:]]}
+                if isinstance(self.model, MixedModelBatch)
+                else {}
+            ),
             "asset_path": portable_path(self.kinematics.path),
             "asset_sha256": sha256(self.kinematics.path),
             "joint_names": JOINT_NAMES,
