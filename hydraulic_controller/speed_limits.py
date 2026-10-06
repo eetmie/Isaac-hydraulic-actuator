@@ -229,15 +229,15 @@ def workspace_poses(kin, cfg: SpeedMapConfig, device: str):
     return xs, zs, targets, q, valid
 
 
-def curve_summary(u: torch.Tensor, speed: torch.Tensor) -> dict:
-    """Full-valve speed [deg/s] and deadband edge (smallest |u| reaching 10% of it) per joint and sign."""
+def curve_summary(u: torch.Tensor, speed: torch.Tensor, fraction: float = 0.1) -> dict:
+    """Full-valve speed [deg/s] and deadband edge (smallest |u| reaching ``fraction`` of it) per joint and sign."""
     out = {}
     for j, joint in enumerate(PID_JOINTS):
         for sign, name in ((-1, "neg"), (1, "pos")):
             side = (u * sign) > 0
             us, vs = (u[side] * sign), (speed[j, side] * sign)
             full = float(vs[us.argmax()])
-            moving = us[vs >= 0.1 * full]
+            moving = us[vs >= fraction * full]
             out[f"{joint}_{name}"] = {
                 "full_valve_deg_s": math.degrees(full),
                 "deadband_u": float(moving.min()) if len(moving) else math.nan,

@@ -89,3 +89,48 @@ class ControllerPolicy:
         torch.jit.script(copy.deepcopy(self.inference).cpu()).save(str(path))
         (path.with_suffix(".json")).write_text(json.dumps(self.contract, indent=2) + "\n")
         return path
+
+
+class PolicyController:
+    """The trained valve policy as a ``closed_loop`` controller, run the way ``run_robot_controller.py`` runs it.
+
+    Every 100 Hz tick pushes the measurement into a ``MeasuredHistory``. Every ``decimation`` ticks the reference
+    becomes a twist request ``v_ref + kp (p_ref - p)`` with the bucket angle held by ``kp_angle``, as in
+    ``benchmark.run_trajectories``. The training-time governor admits it, and the actor's tanh output is held
+    until the next policy tick. Tip tasks only.
+    """
+
+    def __init__(self, policy: ControllerPolicy, kp: float = 3.0, kp_angle: float = 3.0):
+        self.policy, self.kp, self.kp_angle = policy, kp, kp_angle
+
+    def reset(self, task) -> None:
+        from .core import HydraulicModelBatch
+        from .observations import MeasuredHistory
+
+        if not bool(task.is_tip.all()):
+            raise ValueError("the policy tracks tip motion; give it tip-line tasks only")
+        device = task.q0.device
+        source = HydraulicModelBatch(self.policy.model_path, 1, str(device)).source
+        self.history = MeasuredHistory(
+            task.count, str(device), len(source._qdot_buf), len(source._u_buf), source.u_stride
+        )
+        self.history.reset(torch.arange(task.count, device=device), task.q0)
+        self.governor = self.policy.governor(task.kin)
+        self.task, self.v_ref = task, task.tip_velocity()
+        self.u = torch.zeros(task.count, 3, device=device)
+
+    @torch.no_grad()
+    def __call__(self, k: int, q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        from .core import wrap_angle
+
+        self.history.push(q, v, self.u)
+        if k % self.policy.settings.decimation == 0:
+            task = self.task
+            pose, _ = task.kin.pose_jacobian(q)
+            reference = task.tip_ref[k]
+            requested = torch.zeros_like(self.u)
+            requested[:, :2] = self.v_ref[k, :, :2] + self.kp * (reference[:, :2] - pose[:, :2])
+            requested[:, 2] = self.kp_angle * wrap_angle(reference[:, 2] - pose[:, 2])
+            command, _ = self.governor(q, v, requested)
+            self.u = torch.tanh(self.policy(self.history.observe(task.kin, command)))
+        return self.u

@@ -119,6 +119,19 @@ from a sibling `kaivuriprokkis` checkout (`--robot_repo`) and need no simulator:
   with measured IMU jitter, and mixes the mean with the worst plant. It writes
   before/after replays next to the tuned gains.
 
+## Compare PID, MPC and the learned controller
+
+```powershell
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\compare_controllers.py --pid_gains runs\pid_tune\<run>\pid_gains.yaml
+```
+
+Runs the robot's PID, the tuned PID, the PPO valve policy and a sampling MPC
+(MPPI on the actuator network, deadband-compensated, 20 Hz) on the same
+feasible tip lines under every valve/speed perturbation. Each controller sees
+only measured angles, rates and its own past commands, as on the robot. In
+simulation the MLP and the MPC have an advantage the PID lacks: they were trained
+on, or plan with, this very network.
+
 
 ## Example rollouts
 
@@ -212,7 +225,7 @@ complete; physical robot acceptance is still pending.
 - `sim.py`, `sim_common.py`, `endstop_guard.py`: excavator demo and joint configuration.
 - `actuators/`: reusable MLP inference and direct/target integration.
 - `hydraulic_controller/`, `train_controller.py`, `run_controller.py`: learned valve controller training, benchmark and playback.
-- `measure_speeds.py`, `replay_pid.py`, `tune_pid.py`: robot PID replay and tuning. `hydraulic_controller/tasks.py` and `closed_loop.py` hold the controller-neutral scenarios and loop; `pid.py`, `pid_tuning.py` and `speed_limits.py` the PID side.
+- `measure_speeds.py`, `replay_pid.py`, `tune_pid.py`: robot PID replay and tuning. `hydraulic_controller/tasks.py` and `closed_loop.py` hold the controller-neutral scenarios and loop; `pid.py`, `pid_tuning.py` and `speed_limits.py` the PID side; `mpc.py`, the `PolicyController` in `policy.py` and `comparison.py` / `compare_controllers.py` the controller comparison.
 - `assets/`: self-contained bucket/gripper USDs; V4 and V5 select the pitch-capable `_rocking` variants.
 - `models/`: the selected V4, V5 and slew releases, plus `arm_v5_steady`, the controller's plant, and `controller_proto`, the prototype controller.
 - `training/`: reusable CSV/LeRobot training, evaluation, and regression checks.
