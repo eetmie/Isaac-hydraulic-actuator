@@ -80,7 +80,7 @@ def main(argv=None) -> int:
         )
 
     def need(r):
-        """Required / full-valve joint speed; '!' marks paths no controller can follow."""
+        """Required / achievable speed; '!' marks paths no controller can follow."""
         if r["family"] == "joint_step":
             return "-"
         return f"{r['speed_ratio']:.2f}" + ("" if r["feasible"] else "!")
@@ -115,7 +115,8 @@ def main(argv=None) -> int:
     if flagged:
         print(f"\n[WARN] hit a joint limit or went non-finite: {', '.join(flagged)}")
     print(
-        "\nneed = peak required joint speed / nominal full-valve speed; '!' = beyond "
+        "\nneed = required / achievable speed on the nominal plant (tip lines: solved along the path with the "
+        f"bucket angle held, flow sharing included; ramps: single-spool full valve); '!' = beyond "
         f"{cfg.feasible_speed_ratio:g}, so no controller can follow that path on this plant"
     )
     print(f"[INFO] report: {out_dir}")

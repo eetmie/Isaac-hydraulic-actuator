@@ -26,6 +26,7 @@ from .benchmark import PLANTS
 from .core import HOME, HydraulicPlant, measure_joint_speed_limits, sha256, wrap_angle
 from .kinematics import ExcavatorKinematics
 from .pid import BatchedPID, robot_joint_command
+from .speed_limits import SpeedMapConfig, achievable_tip_speeds, direction_vectors
 
 PID_JOINTS = ("boom", "arm", "bucket")  # the robot's pid joint1..joint3, which are sim q[:, 0:3]
 ROBOT_DERIV_FILTER_TAU = 0.10  # PIDController's default; ExcavatorController does not override it
@@ -78,9 +79,10 @@ class ReplayConfig:
     tail_s: float = 1.0  # final window for steady-state metrics
     settle_band_deg: float = 0.25
     settle_band_mm: float = 2.0
-    feasible_speed_ratio: float = (
-        0.9  # required joint speed / full-valve speed above which no controller tracks
-    )
+    # Required / achievable speed above which no controller can track: tip lines use the solved tip speed along
+    # their path (speed_limits), joint ramps the single-spool full-valve speed.
+    feasible_speed_ratio: float = 0.9
+    path_samples: int = 8
     plants: tuple[str, ...] = tuple(PLANTS)
 
 
@@ -159,12 +161,20 @@ def dls_step(kin: ExcavatorKinematics, q: torch.Tensor, tip_target: torch.Tensor
 
 @torch.no_grad()
 def required_speed_ratio(
-    kin: ExcavatorKinematics, scenarios: list[Scenario], q_ref, tip_ref, capacity: torch.Tensor, lam: float
+    model: Path,
+    kin: ExcavatorKinematics,
+    cfg: ReplayConfig,
+    scenarios: list[Scenario],
+    q_ref,
+    tip_ref,
+    capacity: torch.Tensor,
+    lam: float,
 ) -> torch.Tensor:
-    """Peak joint speed each reference demands over the nominal full-valve speed, per scenario (steps: inf).
+    """Required over achievable speed on the nominal plant, per scenario (steps: inf). Controller-independent.
 
-    Tip lines are solved kinematically (DLS iterated to convergence each tick), so this is a property of the
-    path and the plant's flow limits, not of any controller.
+    Joint ramps compare their rate with the single-spool full-valve speed at HOME. Tip lines are solved
+    kinematically (DLS iterated to convergence each tick); their speed is compared with the slowest
+    ``achievable_tip_speeds`` at ``path_samples`` poses along that path, which counts flow sharing between joints.
     """
     q = torch.tensor(HOME, device=q_ref.device).repeat(len(scenarios), 1)
     is_tip = torch.tensor([s.family == "tip_line" for s in scenarios], device=q_ref.device)
@@ -173,9 +183,33 @@ def required_speed_ratio(
         for _ in range(5):
             q[:, :3] += torch.where(is_tip[:, None], dls_step(kin, q, torch.nan_to_num(tip_ref[k]), lam), 0.0)
         path.append(torch.where(is_tip[:, None], q[:, :3], q_ref[k]))
-    speed = torch.diff(torch.stack(path), dim=0) / DT  # [T-1, N, 3]
+    path = torch.stack(path)
+    speed = torch.diff(path, dim=0) / DT  # [T-1, N, 3]
     limit = torch.where(speed < 0, capacity[:, 0], capacity[:, 1])
     ratio = (speed.abs() / limit).amax(dim=(0, 2))
+
+    lines = {}  # one solve per (direction, speed); every plant shares the nominal answer
+    for n, s in enumerate(scenarios):
+        if s.family == "tip_line":
+            lines.setdefault((s.joint, s.size), []).append(n)
+    if lines:
+        poses, directions = [], []
+        for (direction, _), rows in lines.items():
+            n = rows[0]
+            moving = (torch.diff(tip_ref[:, n, :2], dim=0).norm(dim=1) > 0).nonzero().squeeze(1)
+            picks = moving[torch.linspace(0, len(moving) - 1, cfg.path_samples).round().long()]
+            q = torch.zeros(cfg.path_samples, 4, device=path.device)
+            q[:, :3] = path[picks, n]
+            poses.append(q)
+            directions.append({"+X": 0.0, "+Z": 90.0, "-X": 180.0, "-Z": 270.0}[direction])
+        speed_cfg = SpeedMapConfig(directions_deg=tuple(directions))
+        reach, _ = achievable_tip_speeds(
+            model, kin, torch.cat(poses), direction_vectors(speed_cfg.directions_deg, path.device), speed_cfg
+        )  # [L * samples, L]: every pose against every line's direction
+        reach = reach.reshape(len(lines), cfg.path_samples, len(lines))
+        for i, ((_, size), rows) in enumerate(lines.items()):
+            slowest = reach[i, :, i].min()
+            ratio[rows] = size / slowest if slowest > 0 else math.inf
     is_step = torch.tensor([s.family == "joint_step" for s in scenarios], device=q_ref.device)
     return torch.where(is_step, math.inf, ratio)
 
@@ -202,7 +236,7 @@ def run_replay(
     is_tip = torch.tensor([s.family == "tip_line" for s in scenarios], device=device)
     home = torch.tensor([HOME], device=device)
     capacity = measure_joint_speed_limits(model, kin, home.repeat(4, 1))
-    speed_ratio = required_speed_ratio(kin, scenarios, q_ref, tip_ref, capacity, gains.ik_lambda)
+    speed_ratio = required_speed_ratio(model, kin, cfg, scenarios, q_ref, tip_ref, capacity, gains.ik_lambda)
 
     lo, hi = gains.output_limits
     pid = BatchedPID(

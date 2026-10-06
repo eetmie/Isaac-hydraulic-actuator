@@ -17,6 +17,7 @@ from hydraulic_controller.pid import BatchedPID, robot_joint_command
 
 ROOT = Path(__file__).resolve().parents[1]
 ROBOT_PID = Path(os.environ.get("KAIVURIPROKKIS", ROOT.parent / "kaivuriprokkis")) / "modules/pid.py"
+DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"  # the replay's feasibility solve is slow on CPU
 needs_robot = pytest.mark.skipif(not ROBOT_PID.exists(), reason=f"robot PID not found at {ROBOT_PID}")
 
 
@@ -147,7 +148,7 @@ def test_replay_with_zero_gains_leaves_the_machine_at_rest():
         pytest.skip("V5 steady model artifact is not installed")
     cfg = ReplayConfig(plants=("nominal",), duration_s=1.5, tail_s=0.5, tip_speeds_m_s=(0.02,))
     scenarios, traces = run_replay(
-        PidGains([0.0] * 3, [0.0] * 3, [0.0] * 3), cfg, DEFAULT_MODEL, DEFAULT_ASSET, "cpu"
+        PidGains([0.0] * 3, [0.0] * 3, [0.0] * 3), cfg, DEFAULT_MODEL, DEFAULT_ASSET, DEVICE
     )
     assert torch.equal(traces["u"], torch.zeros_like(traces["u"]))
     assert (traces["q"] - torch.tensor(HOME[:3])).abs().max() < 1e-4
