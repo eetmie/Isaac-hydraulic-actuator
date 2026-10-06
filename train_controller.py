@@ -42,15 +42,15 @@ def agent_config(args, policy_hz: int) -> dict:
         "obs_groups": {"actor": ["policy"], "critic": ["critic"]},
         "actor": {
             "class_name": "MLPModel",
-            "hidden_dims": [128, 128],
-            "activation": "tanh",
+            "hidden_dims": list(args.actor_dims),
+            "activation": args.activation,
             "obs_normalization": True,
             "distribution_cfg": {"class_name": "GaussianDistribution", "init_std": 0.5, "std_type": "scalar"},
         },
         "critic": {
             "class_name": "MLPModel",
-            "hidden_dims": [256, 256],
-            "activation": "tanh",
+            "hidden_dims": list(args.critic_dims),
+            "activation": args.activation,
             "obs_normalization": True,
             "distribution_cfg": None,
         },
@@ -88,6 +88,13 @@ def main() -> int:
     parser.add_argument("--curriculum_iterations", type=int, default=300)
     parser.add_argument("--entropy_coef", type=float, default=0.002)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--actor_dims", type=int, nargs="+", default=[128, 128], help="Actor hidden layer widths."
+    )
+    parser.add_argument(
+        "--critic_dims", type=int, nargs="+", default=[256, 256], help="Critic hidden layer widths."
+    )
+    parser.add_argument("--activation", default="tanh", help="Hidden activation of actor and critic.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--no_randomize", action="store_true", help="Disable plant perturbations and noise.")
     parser.add_argument("--resume", help="Checkpoint to continue from (weights and optimizer).")

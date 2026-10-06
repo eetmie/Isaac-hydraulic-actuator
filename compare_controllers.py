@@ -41,7 +41,13 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--pid_gains", type=Path, help="pid: YAML block from tune_pid.py (needed for pid_tuned)"
     )
-    parser.add_argument("--checkpoint", type=Path, default=ROOT / "models/controller_proto/model_1798.pt")
+    parser.add_argument(
+        "--mlp",
+        nargs="+",
+        default=[f"mlp={ROOT / 'models/controller_proto/model_1798.pt'}"],
+        metavar="NAME=CHECKPOINT",
+        help="one or more policy checkpoints to run as controllers (default: the prototype, named mlp)",
+    )
     parser.add_argument("--mpc_model", type=Path, default=DEFAULT_MODEL, help="network the MPC plans with")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="network the plant runs")
     parser.add_argument("--sensor_noise_deg", type=float, default=0.02)
@@ -73,7 +79,9 @@ def main(argv=None) -> int:
             )
             controllers[name] = JointPIDController(tuned)
         elif name == "mlp":
-            controllers[name] = PolicyController(ControllerPolicy(args.checkpoint, args.device))
+            for item in args.mlp:
+                label, _, path = item.partition("=")
+                controllers[label] = PolicyController(ControllerPolicy(Path(path), args.device))
         elif name == "mpc":
             controllers[name] = MPPIController(args.mpc_model, MPPIConfig(seed=args.seed))
 
@@ -95,7 +103,7 @@ def main(argv=None) -> int:
         "plant_model": str(args.model),
         "pid_robot": asdict(robot),
         "pid_gains_file": str(args.pid_gains) if args.pid_gains else None,
-        "mlp_checkpoint": str(args.checkpoint),
+        "mlp_checkpoints": dict(item.partition("=")[::2] for item in args.mlp),
         "mpc": {"model": str(args.mpc_model), **asdict(MPPIConfig(seed=args.seed))},
     }
     write_report(out_dir, prep, summaries, terms, info)
