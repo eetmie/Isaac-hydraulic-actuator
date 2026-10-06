@@ -59,6 +59,7 @@ class MPPIConfig:
     deadband_fraction: float = 0.03
     ramp_w: float = 0.05  # |w| over which the map crosses the deadband
     smoothing: float = 0.3  # executed w = smoothing * solved + (1 - smoothing) * previous; 1 = no filter
+    cuda_graph: bool = True  # capture the horizon rollout once and replay it (CUDA only; halves the solve)
     seed: int = 0
 
 
@@ -72,12 +73,17 @@ class MPPIController:
         if not bool(task.is_tip.all()):
             raise ValueError("this MPC tracks tip motion; give it tip-line tasks only")
         cfg, device = self.cfg, task.q0.device
-        n, knots = task.count, cfg.horizon_ticks // cfg.knot_ticks
+        n, m, knots = task.count, cfg.samples, cfg.horizon_ticks // cfg.knot_ticks
         self.task, self.knots = task, knots
-        self.model = HydraulicModelBatch(self.model_path, n * cfg.samples, str(device), task.dt)
-        source = self.model.source
+        source = HydraulicModelBatch(self.model_path, 1, str(device), task.dt).source
+        if source.hist_q != 1 or not source._has_q:
+            raise ValueError("the MPC predictor expects a model fed the current angles only")
+        self.source, self.net = source, source._model.requires_grad_(False).eval()
+        # The prediction buffers, one row per (environment, sample); same layout as HydraulicModelBatch.
+        self.v_buffer = torch.zeros(n * m, len(source._qdot_buf), 4, device=device)
+        self.u_buffer = torch.zeros(n * m, len(source._u_buf), 3, device=device)
         self.history = MeasuredHistory(
-            n, str(device), self.model.v_history.shape[1] + 1, self.model.u_history.shape[1], source.u_stride
+            n, str(device), self.v_buffer.shape[1] + 1, self.u_buffer.shape[1], source.u_stride
         )
         self.history.reset(torch.arange(n, device=device), task.q0)
         self.plan = torch.zeros(n, knots, 3, device=device)
@@ -92,6 +98,12 @@ class MPPIController:
             [[edges[f"{joint}_{side}"]["deadband_u"] for joint in PID_JOINTS] for side in ("neg", "pos")],
             device=device,
         )  # [2, 3]: negative, positive side
+        # Fixed inputs of one horizon rollout, so it can be captured as a CUDA graph and replayed.
+        self.plans_in = torch.zeros(n * m, knots, 3, device=device)
+        self.reference_in = torch.zeros(cfg.horizon_ticks, n, 3, device=device)
+        self.u_in = torch.zeros(n, 3, device=device)
+        self.graph, self.cost_out = None, None
+        self.use_graph = cfg.cuda_graph and device.type == "cuda"
 
     @torch.no_grad()
     def __call__(self, k: int, q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
@@ -113,37 +125,42 @@ class MPPIController:
         return torch.sign(w) * opening
 
     def seed_model(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Load the measured history into every sample's model row; returns the current (q, v) per row.
+        """Load the measured history into every sample's prediction row; returns the current (q, v) per row.
 
         ``predict`` shifts its buffers and then writes the current values in front, so the buffers are seeded with
         what lies one tick back: rates from the second sample on, and the commands sent before this tick.
         """
-        h, m, model = self.history, self.cfg.samples, self.model
-        model.q_history[:] = h.q.repeat_interleave(m, 0)[:, None]
-        model.v_history[:] = h.v[:, 1:].repeat_interleave(m, 0)
-        model.u_history[:] = h.u.repeat_interleave(m, 0)
-        model.primed[:] = True
-        return h.q.repeat_interleave(m, 0).clone(), h.v[:, 0].repeat_interleave(m, 0).clone()
+        h, m = self.history, self.cfg.samples
+        self.v_buffer.copy_(h.v[:, 1:].repeat_interleave(m, 0))
+        self.u_buffer.copy_(h.u.repeat_interleave(m, 0))
+        return h.q.repeat_interleave(m, 0), h.v[:, 0].repeat_interleave(m, 0)
 
-    def _solve(self, k: int) -> torch.Tensor:
-        cfg, task, model = self.cfg, self.task, self.model
-        n, m, device = task.count, cfg.samples, self.plan.device
-        noise = torch.randn(n, m, self.knots, 3, generator=self.generator, device=device) * cfg.noise_std
-        noise[:, 0] = 0  # keep the warm-started plan itself among the samples
-        plans = (self.plan[:, None] + noise).clamp(-1.0, 1.0)  # [N, M, K, 3]
+    def predict(self, q: torch.Tensor, v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """``HydraulicModelBatch.predict`` without its data-dependent priming, so a CUDA graph can hold it."""
+        src = self.source
+        self.v_buffer[:, 1:] = self.v_buffer[:, :-1].clone()
+        self.u_buffer[:, 1:] = self.u_buffer[:, :-1].clone()
+        self.v_buffer[:, 0], self.u_buffer[:, 0] = v, u
+        features = [q]
+        if src.hist_qdot:
+            features.append(self.v_buffer[:, :: src.qdot_stride].flatten(1))
+        features.append(self.u_buffer[:, :: src.u_stride].flatten(1))
+        x = torch.cat(features, dim=1)
+        prediction = self.net((x - src._x_mean) / src._x_std) * src._y_std + src._y_mean
+        return v + prediction if src.target_mode == "delta_velocity" else prediction
 
+    def horizon_cost(self) -> torch.Tensor:
+        """Cost [N * M] of ``plans_in`` (w) against ``reference_in``, starting from the measured history."""
+        cfg, task, m = self.cfg, self.task, self.cfg.samples
         q, vel = self.seed_model()
-
-        steps = task.tip_ref.shape[0]
-        cost = torch.zeros(n * m, device=device)
-        flat = plans.reshape(n * m, self.knots, 3)
-        valves = self.valves(flat)
+        valves = self.valves(self.plans_in)
+        cost = torch.zeros(len(q), device=q.device)
         for tick in range(cfg.horizon_ticks):
             u = valves[:, tick // cfg.knot_ticks]
-            vel = model.predict(q, vel, u).clamp(-cfg.velocity_limit, cfg.velocity_limit)
+            vel = self.predict(q, vel, u).clamp(-cfg.velocity_limit, cfg.velocity_limit)
             q = (q + task.dt * vel).clamp(self.limits[:, 0], self.limits[:, 1])  # the plant's end stops
             pose, _ = task.kin.pose_jacobian(q)
-            reference = task.tip_ref[min(k + tick, steps - 1)].repeat_interleave(m, 0)
+            reference = self.reference_in[tick].repeat_interleave(m, 0)
             miss = ((pose[:, :2] - reference[:, :2]).norm(dim=1) - cfg.position_tolerance_m).clamp_min(0)
             position = (miss / cfg.pos_scale_m) ** 2
             pitch = (wrap_angle(pose[:, 2] - reference[:, 2]) / cfg.pitch_scale_rad) ** 2
@@ -154,8 +171,35 @@ class MPPIController:
             cost += cfg.effort_weight * u.square().sum(1)
         # Valve changes are charged on the real opening, so a flip across the deadband costs what it costs the
         # hardware, not the small step it is in w.
-        previous = torch.cat((self.u[:, None].repeat_interleave(m, 0), valves[:, :-1]), dim=1)
-        cost += cfg.valve_change_weight * (valves - previous).square().sum((1, 2))
+        previous = torch.cat((self.u_in.repeat_interleave(m, 0)[:, None], valves[:, :-1]), dim=1)
+        return cost + cfg.valve_change_weight * (valves - previous).square().sum((1, 2))
+
+    def _horizon_cost_graphed(self) -> torch.Tensor:
+        if self.graph is None:
+            stream = torch.cuda.Stream()
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):  # warm up off the capture, as torch.cuda.graphs requires
+                for _ in range(3):
+                    self.horizon_cost()
+            torch.cuda.current_stream().wait_stream(stream)
+            self.graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(self.graph):
+                self.cost_out = self.horizon_cost()
+        self.graph.replay()
+        return self.cost_out.clone()
+
+    def _solve(self, k: int) -> torch.Tensor:
+        cfg, task = self.cfg, self.task
+        n, m, device = task.count, cfg.samples, self.plan.device
+        noise = torch.randn(n, m, self.knots, 3, generator=self.generator, device=device) * cfg.noise_std
+        noise[:, 0] = 0  # keep the warm-started plan itself among the samples
+        plans = (self.plan[:, None] + noise).clamp(-1.0, 1.0)  # [N, M, K, 3]
+        steps = task.tip_ref.shape[0]
+        ticks = torch.arange(k, k + cfg.horizon_ticks, device=device).clamp(max=steps - 1)
+        self.plans_in.copy_(plans.reshape(n * m, self.knots, 3))
+        self.reference_in.copy_(task.tip_ref[ticks])
+        self.u_in.copy_(self.u)
+        cost = self._horizon_cost_graphed() if self.use_graph else self.horizon_cost()
 
         cost = torch.nan_to_num(cost.reshape(n, m), nan=float("inf"))
         best = cost.min(1, keepdim=True).values

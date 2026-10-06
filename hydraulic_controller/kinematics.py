@@ -172,12 +172,12 @@ class ExcavatorKinematics:
         point = tip_frame[:, :3, 3]
         blade = transforms[-1][:, :3, 1]  # bucket-local +Y points toward the cutting lip
         angle = torch.atan2(-blade[:, 2], blade[:, 0])
-        pose = torch.cat((point[:, [0, 2]], angle[:, None]), dim=1)
+        pose = torch.cat((point[:, ::2], angle[:, None]), dim=1)
         columns = []
         for i in range(4):
             frame = joints[i]
             axis = frame[:, :3, 1]
-            linear = torch.linalg.cross(axis, point - frame[:, :3, 3])[:, [0, 2]]
+            linear = torch.linalg.cross(axis, point - frame[:, :3, 3])[:, ::2]
             columns.append(torch.cat((linear, axis[:, 1:2]), dim=1))
         return pose, torch.stack(columns, dim=-1)
 

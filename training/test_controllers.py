@@ -18,14 +18,10 @@ needs_proto = pytest.mark.skipif(
 
 
 def tip_task(**overrides):
-    cfg = TaskConfig(
-        families=("tip_line",),
-        plants=("nominal",),
-        tip_speeds_m_s=(0.04,),
-        duration_s=2.0,
-        tail_s=0.5,
-        **overrides,
+    settings = dict(
+        families=("tip_line",), plants=("nominal",), tip_speeds_m_s=(0.04,), duration_s=2.0, tail_s=0.5
     )
+    cfg = TaskConfig(**{**settings, **overrides})
     return prepare(cfg, DEFAULT_MODEL, DEFAULT_ASSET, DEVICE)
 
 
@@ -89,7 +85,7 @@ def test_mpc_model_seeded_from_measurements_predicts_the_plant_exactly():
         mpc.history.push(plant.q, plant.v, previous)
         u = torch.rand(n, 3, generator=generator, device=DEVICE) * 1.2 - 0.6
         q, vel = mpc.seed_model()
-        predicted = mpc.model.predict(q, vel, u).clamp(-2.0, 2.0)
+        predicted = mpc.predict(q, vel, u).clamp(-2.0, 2.0)
         plant.u_cmd.copy_(u)
         plant.step()
         torch.testing.assert_close(predicted, plant.v, rtol=1e-4, atol=1e-5)
@@ -117,3 +113,15 @@ def test_mpc_deadband_map_is_odd_continuous_and_starts_at_the_edge():
     edge_neg = -mpc.valves(torch.full((1, 3), -ramp, device=DEVICE))[0]
     assert torch.allclose(edge_pos, mpc.edges[1]) and torch.allclose(edge_neg, mpc.edges[0])
     assert ((mpc.edges > 0.1) & (mpc.edges < 0.4)).all()  # the measured deadbands, not zero or full valve
+
+
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and DEFAULT_MODEL.exists()), reason="needs CUDA and the plant"
+)
+def test_mpc_cuda_graph_replays_exactly_what_eager_computes():
+    from hydraulic_controller.mpc import MPPIConfig, MPPIController
+
+    prep = tip_task(duration_s=1.5)
+    _, eager = rollout(prep, MPPIController(DEFAULT_MODEL, MPPIConfig(cuda_graph=False)), record=True)
+    _, graph = rollout(prep, MPPIController(DEFAULT_MODEL, MPPIConfig(cuda_graph=True)), record=True)
+    torch.testing.assert_close(graph["u"], eager["u"], rtol=0, atol=1e-6)

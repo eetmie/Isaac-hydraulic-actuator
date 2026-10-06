@@ -196,6 +196,8 @@ def required_speed_ratio(
         for (direction, _, _), rows in lines.items():
             n = rows[0]
             moving = (torch.diff(tip_ref[:, n, :2], dim=0).norm(dim=1) > 0).nonzero().squeeze(1)
+            if len(moving) == 0:
+                raise ValueError("a tip line never starts moving: duration_s must exceed lead_s")
             picks = moving[torch.linspace(0, len(moving) - 1, cfg.path_samples).round().long()]
             sample = torch.zeros(cfg.path_samples, 4, device=path.device)
             sample[:, :3] = path[picks, n]
