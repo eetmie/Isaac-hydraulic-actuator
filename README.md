@@ -96,6 +96,29 @@ Gamepad mode maps the left stick to tip X/Z velocity, right stick X to bucket
 pitch rate, and B to reset. Everything here is free-space motion in simulation;
 digging, contact and the real machine are not validated.
 
+## Tune the robot's joint PID
+
+The same plant can tune the classic controller on the real machine: the
+boom/arm/bucket PIDs of [kaivuriprokkis](https://github.com/eetmie/kaivuriprokkis)
+(`modules/pid.py`, ported 1:1 to batched Torch). All three tools read the gains
+from a sibling `kaivuriprokkis` checkout (`--robot_repo`) and need no simulator:
+
+```powershell
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\measure_speeds.py   # what the plant can reach at all
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\replay_pid.py       # the robot's current gains
+.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\tune_pid.py         # CMA-ES, writes a pid: YAML block
+```
+
+- `measure_speeds.py` maps the achievable tip speed per direction across the
+  workspace, with deadband and flow sharing between joints. That is the ceiling
+  for any controller.
+- The replay runs the robot's own loop (DLS IK step, then PID, then valves) over
+  joint steps, ramps and tip lines under the benchmark's valve perturbations.
+  Lines the plant cannot follow are flagged rather than blamed on the gains.
+- The tuner scores only those feasible lines, from HOME and three central poses,
+  with measured IMU jitter, and mixes the mean with the worst plant. It writes
+  before/after replays next to the tuned gains.
+
 
 ## Example rollouts
 
@@ -189,6 +212,7 @@ complete; physical robot acceptance is still pending.
 - `sim.py`, `sim_common.py`, `endstop_guard.py`: excavator demo and joint configuration.
 - `actuators/`: reusable MLP inference and direct/target integration.
 - `hydraulic_controller/`, `train_controller.py`, `run_controller.py`: learned valve controller training, benchmark and playback.
+- `measure_speeds.py`, `replay_pid.py`, `tune_pid.py` (`hydraulic_controller/speed_limits.py`, `pid*.py`): robot PID replay and tuning.
 - `assets/`: self-contained bucket/gripper USDs; V4 and V5 select the pitch-capable `_rocking` variants.
 - `models/`: the selected V4, V5 and slew releases, plus `arm_v5_steady`, the controller's plant, and `controller_proto`, the prototype controller.
 - `training/`: reusable CSV/LeRobot training, evaluation, and regression checks.

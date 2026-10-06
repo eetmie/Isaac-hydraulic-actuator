@@ -74,7 +74,9 @@ class ReplayConfig:
     tip_speeds_m_s: tuple[float, ...] = (0.02, 0.04, 0.07)
     tip_travel_m: float = 0.10
     tip_accel_m_s2: float = 0.5  # pathing_config max_accel_mps2
-    lead_s: float = 1.0  # hold before the move starts, so the PID holds HOME first
+    # Extra start positions as tip (x, z) [m] at the HOME bucket angle; HOME itself is always start 0.
+    start_tips: tuple[tuple[float, float], ...] = ()
+    lead_s: float = 1.0  # hold before the move starts, so the PID holds the start pose first
     duration_s: float = 7.0
     tail_s: float = 1.0  # final window for steady-state metrics
     settle_band_deg: float = 0.25
@@ -83,6 +85,8 @@ class ReplayConfig:
     # their path (speed_limits), joint ramps the single-spool full-valve speed.
     feasible_speed_ratio: float = 0.9
     path_samples: int = 8
+    path_joint_margin: float = 0.02  # rad; a reference path must stay this far inside the joint limits
+    sensor_noise_deg: float = 0.0  # white noise on the joint angles the PID and IK see
     plants: tuple[str, ...] = tuple(PLANTS)
 
 
@@ -92,12 +96,14 @@ class Scenario:
     joint: str  # moved joint, or the tip direction ("+X", "-Z", ...)
     size: float  # step deg, ramp deg/s, or tip speed m/s
     plant: str
+    start: int = 0  # index into the start poses; 0 is HOME
 
     @property
     def name(self) -> str:
         unit = {"joint_step": "deg", "joint_ramp": "deg/s", "tip_line": "mm/s"}[self.family]
         size = self.size * 1000 if self.family == "tip_line" else self.size
-        return f"{self.family}:{self.joint}:{size:g}{unit}"
+        where = f"@s{self.start}" if self.start else ""
+        return f"{self.family}:{self.joint}:{size:g}{unit}{where}"
 
 
 def trapezoid(distance: float, speed: float, accel: float, t: torch.Tensor) -> torch.Tensor:
@@ -113,34 +119,53 @@ def trapezoid(distance: float, speed: float, accel: float, t: torch.Tensor) -> t
     return accel_part + cruise_part + peak * t_dec - 0.5 * accel * t_dec**2
 
 
-def build_scenarios(cfg: ReplayConfig) -> list[Scenario]:
+def start_poses(kin: ExcavatorKinematics, cfg: ReplayConfig, device: str) -> torch.Tensor:
+    """HOME followed by the IK solutions of ``cfg.start_tips`` at the HOME bucket angle, shape [K, 4] rad."""
+    home = torch.tensor([HOME], device=device)
+    if not cfg.start_tips:
+        return home
+    pitch = kin.pose_jacobian(home)[0][0, 2]
+    targets = torch.tensor([[x, z, 0.0] for x, z in cfg.start_tips], device=device)
+    targets[:, 2] = pitch
+    q, valid = kin.inverse(targets, home)
+    if not valid.all():
+        bad = [tip for tip, ok in zip(cfg.start_tips, valid.tolist()) if not ok]
+        raise ValueError(f"start tips not reachable at the HOME bucket angle: {bad}")
+    return torch.cat((home, q))
+
+
+def build_scenarios(cfg: ReplayConfig, starts: int = 1) -> list[Scenario]:
     out = []
     for plant in cfg.plants:
-        for joint in PID_JOINTS:
-            for sign in (1.0, -1.0):
-                out += [Scenario("joint_step", joint, sign * a, plant) for a in cfg.step_deg]
-                out += [Scenario("joint_ramp", joint, sign * r, plant) for r in cfg.ramp_deg_s]
-        for direction in ("+X", "-X", "+Z", "-Z"):
-            out += [Scenario("tip_line", direction, v, plant) for v in cfg.tip_speeds_m_s]
+        for start in range(starts):
+            for joint in PID_JOINTS:
+                for sign in (1.0, -1.0):
+                    out += [Scenario("joint_step", joint, sign * a, plant, start) for a in cfg.step_deg]
+                    out += [Scenario("joint_ramp", joint, sign * r, plant, start) for r in cfg.ramp_deg_s]
+            for direction in ("+X", "-X", "+Z", "-Z"):
+                out += [Scenario("tip_line", direction, v, plant, start) for v in cfg.tip_speeds_m_s]
     return out
 
 
-def reference(cfg: ReplayConfig, scenarios: list[Scenario], home_pose: torch.Tensor, device: str):
-    """Joint targets [T, N, 3] rad and tip targets [T, N, 3] (m, m, rad); a row's unused target stays NaN."""
+def reference(cfg: ReplayConfig, scenarios: list[Scenario], q0: torch.Tensor, pose0: torch.Tensor):
+    """Joint targets [T, N, 3] rad and tip targets [T, N, 3] (m, m, rad) from each row's start q0 / pose0.
+
+    A row's unused target stays NaN.
+    """
+    device = q0.device
     steps = round(cfg.duration_s / DT)
     t = torch.arange(1, steps + 1, device=device, dtype=torch.float32) * DT - cfg.lead_s
-    home = torch.tensor(HOME[:3], device=device)
     q_ref = torch.full((steps, len(scenarios), 3), math.nan, device=device)
     tip_ref = torch.full_like(q_ref, math.nan)
     for n, s in enumerate(scenarios):
         if s.family == "tip_line":
             axis = 0 if s.joint[1] == "X" else 1
             sign = 1.0 if s.joint[0] == "+" else -1.0
-            tip_ref[:, n] = home_pose
+            tip_ref[:, n] = pose0[n]
             tip_ref[:, n, axis] += sign * trapezoid(cfg.tip_travel_m, s.size, cfg.tip_accel_m_s2, t)
             continue
         j = PID_JOINTS.index(s.joint)
-        q_ref[:, n] = home
+        q_ref[:, n] = q0[n, :3]
         if s.family == "joint_step":
             q_ref[:, n, j] += torch.where(t >= 0, math.radians(s.size), 0.0)
         else:
@@ -165,114 +190,272 @@ def required_speed_ratio(
     kin: ExcavatorKinematics,
     cfg: ReplayConfig,
     scenarios: list[Scenario],
+    q0: torch.Tensor,
     q_ref,
     tip_ref,
     capacity: torch.Tensor,
     lam: float,
-) -> torch.Tensor:
-    """Required over achievable speed on the nominal plant, per scenario (steps: inf). Controller-independent.
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Required over achievable speed on the nominal plant (steps: inf), and whether each reference path stays
+    valid (in limits with ``path_joint_margin``, collision-free). Both are controller-independent.
 
-    Joint ramps compare their rate with the single-spool full-valve speed at HOME. Tip lines are solved
-    kinematically (DLS iterated to convergence each tick); their speed is compared with the slowest
-    ``achievable_tip_speeds`` at ``path_samples`` poses along that path, which counts flow sharing between joints.
+    Joint ramps compare their rate with the single-spool full-valve speed at their start pose (``capacity`` is
+    [N, 3, 2]). Tip lines are solved kinematically (DLS iterated to convergence each tick); their speed is
+    compared with the slowest ``achievable_tip_speeds`` at ``path_samples`` poses along that path, which counts
+    flow sharing between joints.
     """
-    q = torch.tensor(HOME, device=q_ref.device).repeat(len(scenarios), 1)
+    q = q0.clone()
     is_tip = torch.tensor([s.family == "tip_line" for s in scenarios], device=q_ref.device)
-    path = []
+    path, valid = [], torch.ones(len(scenarios), dtype=torch.bool, device=q.device)
     for k in range(q_ref.shape[0]):
         for _ in range(5):
             q[:, :3] += torch.where(is_tip[:, None], dls_step(kin, q, torch.nan_to_num(tip_ref[k]), lam), 0.0)
-        path.append(torch.where(is_tip[:, None], q[:, :3], q_ref[k]))
+        step = torch.where(is_tip[:, None], q[:, :3], q_ref[k])
+        path.append(step)
+        valid &= kin.valid(torch.cat((step, q0[:, 3:]), dim=1), cfg.path_joint_margin)
     path = torch.stack(path)
     speed = torch.diff(path, dim=0) / DT  # [T-1, N, 3]
-    limit = torch.where(speed < 0, capacity[:, 0], capacity[:, 1])
+    limit = torch.where(speed < 0, capacity[:, :, 0], capacity[:, :, 1])
     ratio = (speed.abs() / limit).amax(dim=(0, 2))
 
-    lines = {}  # one solve per (direction, speed); every plant shares the nominal answer
+    lines = {}  # one solve per (direction, speed, start); every plant shares the nominal answer
     for n, s in enumerate(scenarios):
         if s.family == "tip_line":
-            lines.setdefault((s.joint, s.size), []).append(n)
+            lines.setdefault((s.joint, s.size, s.start), []).append(n)
     if lines:
         poses, directions = [], []
-        for (direction, _), rows in lines.items():
+        for (direction, _, _), rows in lines.items():
             n = rows[0]
             moving = (torch.diff(tip_ref[:, n, :2], dim=0).norm(dim=1) > 0).nonzero().squeeze(1)
             picks = moving[torch.linspace(0, len(moving) - 1, cfg.path_samples).round().long()]
-            q = torch.zeros(cfg.path_samples, 4, device=path.device)
-            q[:, :3] = path[picks, n]
-            poses.append(q)
+            sample = torch.zeros(cfg.path_samples, 4, device=path.device)
+            sample[:, :3] = path[picks, n]
+            poses.append(sample)
             directions.append({"+X": 0.0, "+Z": 90.0, "-X": 180.0, "-Z": 270.0}[direction])
-        speed_cfg = SpeedMapConfig(directions_deg=tuple(directions))
+        speed_cfg = SpeedMapConfig(directions_deg=(0.0, 90.0, 180.0, 270.0))
         reach, _ = achievable_tip_speeds(
             model, kin, torch.cat(poses), direction_vectors(speed_cfg.directions_deg, path.device), speed_cfg
-        )  # [L * samples, L]: every pose against every line's direction
-        reach = reach.reshape(len(lines), cfg.path_samples, len(lines))
-        for i, ((_, size), rows) in enumerate(lines.items()):
-            slowest = reach[i, :, i].min()
+        )
+        reach = reach.reshape(len(lines), cfg.path_samples, 4)
+        for i, ((_, size, _), rows) in enumerate(lines.items()):
+            slowest = reach[i, :, speed_cfg.directions_deg.index(directions[i])].min()
             ratio[rows] = size / slowest if slowest > 0 else math.inf
     is_step = torch.tensor([s.family == "joint_step" for s in scenarios], device=q_ref.device)
-    return torch.where(is_step, math.inf, ratio)
+    return torch.where(is_step, math.inf, ratio), valid
+
+
+@dataclass
+class Prepared:
+    """Scenarios with their references, start poses, plant perturbations and controller-independent checks."""
+
+    cfg: ReplayConfig
+    model: Path
+    kin: ExcavatorKinematics
+    scenarios: list[Scenario]
+    q0: torch.Tensor  # [S, 4] rad
+    q_ref: torch.Tensor  # [T, S, 3] rad, NaN for tip lines
+    tip_ref: torch.Tensor  # [T, S, 3] (m, m, rad), NaN for joint scenarios
+    speed_ratio: torch.Tensor  # [S]
+    path_valid: torch.Tensor  # [S]
+    capacity: torch.Tensor  # [S, 3, 2] rad/s, single-spool full valve at the start pose
+
+    @property
+    def feasible(self) -> torch.Tensor:
+        """Paths a perfect controller could follow: fast enough plant and a valid reference."""
+        is_step = torch.tensor([s.family == "joint_step" for s in self.scenarios], device=self.q0.device)
+        return self.path_valid & (is_step | (self.speed_ratio <= self.cfg.feasible_speed_ratio))
+
+    def subset(self, keep: torch.Tensor) -> "Prepared":
+        rows = keep.nonzero().squeeze(1)
+        return Prepared(
+            self.cfg,
+            self.model,
+            self.kin,
+            [self.scenarios[i] for i in rows.tolist()],
+            self.q0[rows],
+            self.q_ref[:, rows],
+            self.tip_ref[:, rows],
+            self.speed_ratio[rows],
+            self.path_valid[rows],
+            self.capacity[rows],
+        )
+
+
+@torch.no_grad()
+def prepare(cfg: ReplayConfig, model: Path, asset: Path, device: str, lam: float = 0.001) -> Prepared:
+    """Build scenarios and everything about them that does not depend on the controller."""
+    kin = ExcavatorKinematics(asset, device)
+    starts = start_poses(kin, cfg, device)
+    scenarios = build_scenarios(cfg, len(starts))
+    index = torch.tensor([s.start for s in scenarios], device=device)
+    q0 = starts[index]
+    q_ref, tip_ref = reference(cfg, scenarios, q0, kin.pose_jacobian(q0)[0])
+    capacity = torch.stack([measure_joint_speed_limits(model, kin, q[None].repeat(4, 1)) for q in starts])
+    capacity = capacity[index]
+    ratio, valid = required_speed_ratio(model, kin, cfg, scenarios, q0, q_ref, tip_ref, capacity, lam)
+    return Prepared(cfg, Path(model), kin, scenarios, q0, q_ref, tip_ref, ratio, valid, capacity)
+
+
+COST_TERMS = ("track", "final", "overshoot", "tail_p2p", "valve_travel", "invalid")
+
+
+@torch.no_grad()
+def rollout(
+    prep: Prepared,
+    kp: torch.Tensor,
+    ki: torch.Tensor,
+    kd: torch.Tensor,
+    gains: PidGains,
+    record: bool = False,
+    seed: int = 0,
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor] | None]:
+    """Run C gain sets ([C, 3] each) over every scenario as one batch of C*S environments.
+
+    Returns per-(candidate, scenario) cost terms [C, S] and, with ``record``, per-tick traces for C == 1.
+    Errors are in degree equivalents: joint angles in deg (all three joints), tip position in mm / 10 (1 deg at
+    the ~0.6 m reach is ~10 mm) plus half the bucket-angle error in deg.
+
+    * ``track``: mean error once the move starts; ``final``: mean error over the last ``tail_s``;
+    * ``overshoot``: largest travel past the end of the move (moved joint, or tip along the line);
+    * ``tail_p2p``: summed peak-to-peak joint motion over the last ``tail_s`` (hunting, limit cycles);
+    * ``valve_travel``: summed valve travel per second (chatter);
+    * ``invalid``: 1 when the plant went non-finite or onto a joint limit.
+    """
+    cfg, kin, device = prep.cfg, prep.kin, prep.q0.device
+    c, s = len(kp), len(prep.scenarios)
+    count = c * s
+    if record and c != 1:
+        raise ValueError("traces are recorded for a single gain set only")
+
+    def tile(x):
+        return x.repeat(c, *([1] * (x.dim() - 1)))
+
+    plant = HydraulicPlant(prep.model, kin, count, str(device))
+    for n, sc in enumerate(prep.scenarios):
+        p = PLANTS[sc.plant]
+        rows = torch.arange(n, count, s, device=device)
+        plant.valve_gain[rows] = p["gain"]
+        plant.valve_offset[rows] = p["offset"]
+        plant.action_delay[rows] = p["delay"]
+        plant.speed_scale[rows, :3] = p["speed"]
+    q0 = tile(prep.q0)
+    plant.reset(torch.arange(count, device=device), q0)
+
+    lo, hi = gains.output_limits
+    pid = BatchedPID(
+        count,
+        3,
+        kp.repeat_interleave(s, 0),
+        ki.repeat_interleave(s, 0),
+        kd.repeat_interleave(s, 0),
+        deriv_filter_tau=torch.tensor(gains.deriv_filter_tau, device=device),
+        min_output=lo,
+        max_output=hi,
+        device=device,
+    )
+    is_tip = tile(torch.tensor([sc.family == "tip_line" for sc in prep.scenarios], device=device))
+    moved = tile(
+        torch.tensor(
+            [PID_JOINTS.index(sc.joint) if sc.family != "tip_line" else 0 for sc in prep.scenarios],
+            device=device,
+        )
+    )
+    line_axis = tile(
+        torch.tensor([0 if sc.joint.endswith("X") else 1 for sc in prep.scenarios], device=device)
+    )
+    rows = torch.arange(count, device=device)
+    q_end, tip_end = tile(prep.q_ref[-1]), tile(prep.tip_ref[-1])
+    q_start, tip_start = tile(prep.q_ref[0]), tile(prep.tip_ref[0])
+    move_sign = torch.where(
+        is_tip,
+        torch.sign(tip_end[rows, line_axis] - tip_start[rows, line_axis]),
+        torch.sign(q_end[rows, moved] - q_start[rows, moved]),
+    )
+    pose0 = kin.pose_jacobian(q0)[0]
+
+    steps = prep.q_ref.shape[0]
+    t = torch.arange(1, steps + 1, device=device) * DT - cfg.lead_s
+    n_moving, n_tail = int((t >= 0).sum()), int((t >= t[-1] - cfg.tail_s).sum())
+    terms = {key: torch.zeros(count, device=device) for key in COST_TERMS}
+    tail_lo = torch.full((count, 3), math.inf, device=device)
+    tail_hi = torch.full((count, 3), -math.inf, device=device)
+    noise = torch.Generator(device=device).manual_seed(seed)
+    noise_std = math.radians(cfg.sensor_noise_deg)
+    u_prev = torch.zeros(count, 3, device=device)
+    trace = {key: [] for key in ("q", "u", "q_target", "tip", "tip_target")} if record else None
+    for k in range(steps):
+        q = plant.q[:, :3]
+        q_seen = plant.q.clone()
+        if noise_std > 0:
+            # Common random numbers: every candidate sees the same noise on the same scenario.
+            q_seen[:, :3] += tile(torch.randn(s, 3, generator=noise, device=device)) * noise_std
+        tip_target = torch.where(is_tip[:, None], tile(prep.tip_ref[k]), pose0)
+        ik_target = q_seen[:, :3] + dls_step(kin, q_seen, tip_target, gains.ik_lambda)
+        target = torch.where(is_tip[:, None], ik_target, tile(prep.q_ref[k]))
+        u = robot_joint_command(pid, target, q_seen[:, :3], DT)
+        plant.invalid |= ~torch.isfinite(u).all(dim=1)
+        u = torch.nan_to_num(u)
+        plant.u_cmd.copy_(u)
+        plant.step()
+
+        q = plant.q[:, :3]
+        tip = kin.pose_jacobian(plant.q)[0]
+        joint_err = torch.rad2deg((tile(prep.q_ref[k]) - q).abs()).sum(1)
+        tip_err = (tip[:, :2] - tip_target[:, :2]).norm(dim=1) * 100 + 0.5 * torch.rad2deg(
+            wrap_angle(tip[:, 2] - tip_target[:, 2]).abs()
+        )
+        err = torch.where(is_tip, tip_err, torch.nan_to_num(joint_err))
+        if t[k] >= 0:
+            terms["track"] += err / n_moving
+            past = torch.where(
+                is_tip,
+                (tip[rows, line_axis] - tip_end[rows, line_axis]) * move_sign * 100,
+                torch.rad2deg((q[rows, moved] - q_end[rows, moved]) * move_sign),
+            )
+            terms["overshoot"] = torch.maximum(terms["overshoot"], torch.nan_to_num(past).clamp_min(0))
+        if t[k] >= t[-1] - cfg.tail_s:
+            terms["final"] += err / n_tail
+            tail_lo, tail_hi = torch.minimum(tail_lo, q), torch.maximum(tail_hi, q)
+        terms["valve_travel"] += (u - u_prev).abs().sum(1) / cfg.duration_s
+        u_prev = u
+        if record:
+            trace["q"].append(q.clone())
+            trace["u"].append(u)
+            trace["q_target"].append(target)
+            trace["tip"].append(tip)
+            trace["tip_target"].append(tip_target)
+
+    at_limit = (
+        (plant.q[:, :3] <= kin.limits[:3, 0] + 1e-6) | (plant.q[:, :3] >= kin.limits[:3, 1] - 1e-6)
+    ).any(1)
+    terms["tail_p2p"] = torch.rad2deg(tail_hi - tail_lo).sum(1)
+    terms["invalid"] = (plant.invalid | at_limit).float()
+    terms = {key: value.reshape(c, s) for key, value in terms.items()}
+    if not record:
+        return terms, None
+    traces = {key: torch.stack(value).cpu() for key, value in trace.items()}
+    traces["invalid"] = plant.invalid.cpu()
+    traces["speed_ratio"] = prep.speed_ratio.cpu()
+    traces["path_valid"] = prep.path_valid.cpu()
+    traces["capacity_rad_s"] = prep.capacity.cpu()
+    traces["at_limit"] = (
+        (traces["q"] <= kin.limits[:3, 0].cpu() + 1e-6) | (traces["q"] >= kin.limits[:3, 1].cpu() - 1e-6)
+    ).any(dim=(0, 2))
+    return terms, traces
+
+
+def gain_tensors(gains: PidGains, device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return tuple(torch.tensor([values], device=device) for values in (gains.kp, gains.ki, gains.kd))
 
 
 @torch.no_grad()
 def run_replay(
     gains: PidGains, cfg: ReplayConfig, model: Path, asset: Path, device: str = "cuda:0"
 ) -> tuple[list[Scenario], dict[str, torch.Tensor]]:
-    """Roll every scenario out once; returns per-tick traces on the CPU."""
-    kin = ExcavatorKinematics(asset, device)
-    scenarios = build_scenarios(cfg)
-    count = len(scenarios)
-    plant = HydraulicPlant(model, kin, count, device)
-    for n, s in enumerate(scenarios):
-        p = PLANTS[s.plant]
-        plant.valve_gain[n] = p["gain"]
-        plant.valve_offset[n] = p["offset"]
-        plant.action_delay[n] = p["delay"]
-        plant.speed_scale[n, :3] = p["speed"]
-    plant.reset(torch.arange(count, device=device))
-
-    home_pose = kin.pose_jacobian(torch.tensor([HOME], device=device))[0][0]
-    q_ref, tip_ref = reference(cfg, scenarios, home_pose, device)
-    is_tip = torch.tensor([s.family == "tip_line" for s in scenarios], device=device)
-    home = torch.tensor([HOME], device=device)
-    capacity = measure_joint_speed_limits(model, kin, home.repeat(4, 1))
-    speed_ratio = required_speed_ratio(model, kin, cfg, scenarios, q_ref, tip_ref, capacity, gains.ik_lambda)
-
-    lo, hi = gains.output_limits
-    pid = BatchedPID(
-        count,
-        3,
-        torch.tensor(gains.kp, device=device),
-        torch.tensor(gains.ki, device=device),
-        torch.tensor(gains.kd, device=device),
-        deriv_filter_tau=torch.tensor(gains.deriv_filter_tau, device=device),
-        min_output=lo,
-        max_output=hi,
-        device=device,
-    )
-    trace = {key: [] for key in ("q", "u", "q_target", "tip", "tip_target")}
-    for k in range(q_ref.shape[0]):
-        q = plant.q[:, :3]
-        tip_target = torch.where(is_tip[:, None], tip_ref[k], home_pose)
-        ik_target = q + dls_step(kin, plant.q, tip_target, gains.ik_lambda)
-        target = torch.where(is_tip[:, None], ik_target, q_ref[k])
-        u = robot_joint_command(pid, target, q, DT)
-        plant.invalid |= ~torch.isfinite(u).all(dim=1)
-        plant.u_cmd.copy_(torch.nan_to_num(u))
-        plant.step()
-        trace["q"].append(plant.q[:, :3].clone())
-        trace["u"].append(u)
-        trace["q_target"].append(target)
-        trace["tip"].append(kin.pose_jacobian(plant.q)[0])
-        trace["tip_target"].append(tip_target)
-    traces = {key: torch.stack(value).cpu() for key, value in trace.items()}
-    traces["invalid"] = plant.invalid.cpu()
-    traces["speed_ratio"] = speed_ratio.cpu()
-    traces["capacity_rad_s"] = capacity.cpu()
-    traces["at_limit"] = (
-        (traces["q"] <= kin.limits[:3, 0].cpu() + 1e-6) | (traces["q"] >= kin.limits[:3, 1].cpu() - 1e-6)
-    ).any(dim=(0, 2))
-    return scenarios, traces
+    """Roll every scenario out once with one gain set; returns per-tick traces on the CPU."""
+    prep = prepare(cfg, model, asset, device, gains.ik_lambda)
+    _, traces = rollout(prep, *gain_tensors(gains, device), gains, record=True)
+    return prep.scenarios, traces
 
 
 def _settle_time(err: torch.Tensor, band: float, t: torch.Tensor) -> float:
@@ -301,8 +484,9 @@ def metrics(cfg: ReplayConfig, scenarios: list[Scenario], traces: dict[str, torc
             "size": s.size,
             "plant": s.plant,
             "speed_ratio": float(traces["speed_ratio"][n]),
-            "feasible": bool(traces["speed_ratio"][n] <= cfg.feasible_speed_ratio)
-            or s.family == "joint_step",
+            "start": s.start,
+            "feasible": bool(traces["path_valid"][n])
+            and (s.family == "joint_step" or bool(traces["speed_ratio"][n] <= cfg.feasible_speed_ratio)),
             "saturated_frac": float((u.abs() >= 0.999).any(1)[moving].float().mean()),
             "valve_travel_per_s": float(du[moving[1:]].sum() / (moving.sum() * DT)),
             "tail_valve_travel_per_s": float(du[tail[1:]].sum() / (tail.sum() * DT)),
@@ -395,7 +579,7 @@ def plot_report(out_path: Path, cfg: ReplayConfig, scenarios: list[Scenario], tr
         return {
             s.plant: n
             for n, s in enumerate(scenarios)
-            if (s.family, s.joint, s.size) == (family, joint, size)
+            if (s.family, s.joint, s.size, s.start) == (family, joint, size, 0)
         }
 
     big, fast = max(cfg.step_deg), max(cfg.ramp_deg_s)
