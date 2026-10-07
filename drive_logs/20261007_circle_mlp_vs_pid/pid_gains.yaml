@@ -1,0 +1,16 @@
+pid:
+  # Joint 1: Boom (tuned in sim)
+  joint1:
+    kp: 12.300
+    ki: 3.610
+    kd: 0.050
+  # Joint 2: Arm (tuned in sim)
+  joint2:
+    kp: 19.400
+    ki: 6.320
+    kd: 0.165
+  # Joint 3: Bucket (tuned in sim)
+  joint3:
+    kp: 10.200
+    ki: 2.840
+    kd: 0.004

@@ -1,0 +1,54 @@
+{
+  "units": "SI except *_g acceleration in g and *_dps gyro in degrees/s",
+  "notes": [
+    "Joint-derived tip, not independent position measurement.",
+    "Firmware startup gyro bias removed; raw channels precede host mounting rotation.",
+    "Sequential sessions, uncontrolled hydraulic oil temperature.",
+    "Full CSV retains approach, settling and final partial pass; filter partial passes for circle comparisons.",
+    "MLP nominal actor 100 Hz, governor nominal 20 Hz.",
+    "Zero input deadzone only: spool deadband compensation and dither unchanged."
+  ],
+  "start_reference": {
+    "ref_x_m": 0.5231709480285645,
+    "ref_z_m": 0.02483178675174713,
+    "ref_angle_rad": 2.9945616722106934
+  },
+  "runs": [
+    {
+      "stem": "circle_mlp_100hz_live_20261007_10",
+      "duration_s": 300.0067305859993,
+      "samples": 28135,
+      "sample_rate_hz": 93.77789606601897,
+      "deadzone_percent": 2,
+      "approach_output_limit": 0.25,
+      "files": {
+        "circle_mlp_100hz_live_20261007_10.csv": "3277b6fa7b1cbb2a2ce01736eb0c5f27d54a2485e424f83cc2c1bef9c7c27199",
+        "circle_mlp_100hz_live_20261007_10.json": "ac4356c34e1f79d010cb011aa25f181b53e480ead0a6127ac013a8979a2e1df7"
+      }
+    },
+    {
+      "stem": "circle_pid_dz0_live_20261007_03",
+      "duration_s": 300.0000026050002,
+      "samples": 30001,
+      "sample_rate_hz": 99.99999913166661,
+      "deadzone_percent": 0,
+      "approach_output_limit": 0.25,
+      "files": {
+        "circle_pid_dz0_live_20261007_03.csv": "32833ce45e2481dc080b263e63606582324b65ad6eb58bef5ee775b615a9c27b",
+        "circle_pid_dz0_live_20261007_03.json": "989782f9b14fbfd1eb13ea5e8f2cfd31495eb77afb4e6902b951b43a66846e83"
+      }
+    },
+    {
+      "stem": "circle_mlp_dz0_live_20261007_03",
+      "duration_s": 300.0098677820006,
+      "samples": 30002,
+      "sample_rate_hz": 100.00004407121685,
+      "deadzone_percent": 0,
+      "approach_output_limit": 0.5,
+      "files": {
+        "circle_mlp_dz0_live_20261007_03.csv": "b1180a9f25fa4fba7640f22e304bdb9d60dabc2750cdcb72f53a3ff7b0878044",
+        "circle_mlp_dz0_live_20261007_03.json": "de910e7398088175ab9c7ad397723f56943508a5a27b601ecb7c995e206d7db3"
+      }
+    }
+  ]
+}
