@@ -95,3 +95,50 @@ def test_default_config_keeps_the_original_recipe():
     cfg = HydraulicControlEnvCfg()
     assert cfg.extra_model_paths == () and cfg.command_speed_mode == "uniform"
     assert cfg.linear_error_weight == 0.0 and cfg.angular_error_weight == 0.0
+
+
+def test_pivot_offset_matches_the_kinematics():
+    kin = ExcavatorKinematics(DEFAULT_ASSET, "cpu")
+    generator = torch.Generator().manual_seed(0)
+    lo, hi = kin.limits[:, 0], kin.limits[:, 1]
+    q = lo + (hi - lo) * torch.rand(64, 4, generator=generator)
+    tip, tip_jac = kin.pose_jacobian(q)
+    pivot, pivot_jac = kin.pose_jacobian(q, "pivot")
+    torch.testing.assert_close(tip[:, 2], pivot[:, 2])
+    torch.testing.assert_close(tip[:, :2] - pivot[:, :2], kin.tip_offset(tip[:, 2]), atol=1e-5, rtol=0)
+    assert pivot_jac[:, :2, 2].abs().max() < 1e-6  # the bucket joint only turns the bucket
+    torch.testing.assert_close(tip_jac[:, 2], pivot_jac[:, 2])
+
+
+@needs_models
+def test_motion_starts_continue_moving_states_with_their_histories():
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    cfg = HydraulicControlEnvCfg(
+        num_envs=64,
+        device="cpu",
+        extra_model_paths=("models/arm_v4",),
+        motion_start_prob=1.0,
+        motion_pool_size=64,
+        gyro_observations=True,
+    )
+    env = HydraulicControlEnv(cfg)
+    moving = env.plant.v[:, :3].abs().amax(1) > 0.02
+    assert moving.float().mean() > 0.5
+    assert (env.plant.u_cmd_history.abs().sum((1, 2)) > 0).float().mean() > 0.5
+    torch.testing.assert_close(env.sensors.history.u, env.plant.u_cmd_history)
+    assert torch.isfinite(env.get_observations()["policy"]).all()
+    for _ in range(25):  # crosses a pool refresh
+        env.step(torch.zeros(64, 3))
+    assert env.contract()["motion_start"]["prob"] == 1.0
+
+
+@needs_models
+def test_pivot_environment_observes_and_rewards_the_pivot():
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    env = HydraulicControlEnv(HydraulicControlEnvCfg(num_envs=8, device="cpu", tracked_point="pivot"))
+    assert env.contract()["tracked_point"] == "pivot" and env.governor.point == "pivot"
+    pose, _ = env.kin.pose_jacobian(env.plant.q, "pivot")
+    torch.testing.assert_close(env.plant.tip_state()[0], pose)
+    env.step(torch.zeros(8, 3))

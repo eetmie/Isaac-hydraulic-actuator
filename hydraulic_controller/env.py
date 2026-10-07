@@ -82,6 +82,18 @@ class HydraulicControlEnvCfg:
     angular_error_weight: float = 0.0
     termination_penalty: float = 10.0
 
+    # Tracked point: "tip" (bucket tip) or "pivot" (bucket joint). With "pivot" the bucket joint only turns the
+    # bucket; tip requests are converted outside the policy (``policy.PolicyController``).
+    tracked_point: str = "tip"
+    # Episodes that start mid-motion: this share of resets continues a state from a pool driven for
+    # motion_start_s by a joint-space P controller toward random poses, so histories and the arm are already
+    # moving; the request starts at that motion and slews to the new target. The pool is redriven every
+    # motion_pool_refresh_steps policy steps.
+    motion_start_prob: float = 0.0
+    motion_start_s: float = 1.2
+    motion_pool_size: int = 4096
+    motion_pool_refresh_steps: int = 120
+
     # Hidden per-episode plant perturbations and observation noise (sim-to-real robustness).
     randomize: bool = True
     valve_gain_range: tuple[float, float] = (0.9, 1.1)
@@ -129,7 +141,7 @@ class HydraulicControlEnv(VecEnv):
         self.kin.build_collision_grid()
         extra = tuple(resolve_path(path) for path in cfg.extra_model_paths)
         self.plant = HydraulicPlant(
-            cfg.model_path, self.kin, self.num_envs, self.device, self.settings, extra
+            cfg.model_path, self.kin, self.num_envs, self.device, self.settings, extra, cfg.tracked_point
         )
         self.speed_table = None
         if cfg.command_speed_mode == "achievable":
@@ -155,8 +167,15 @@ class HydraulicControlEnv(VecEnv):
                 cfg.model_path, self.kin, self._sample_poses(64), self.settings
             )
         self.governor = CommandGovernor(
-            self.kin, self.settings, self.joint_speed_limits, cfg.governor_joint_speed_margin
+            self.kin,
+            self.settings,
+            self.joint_speed_limits,
+            cfg.governor_joint_speed_margin,
+            cfg.tracked_point,
         )
+        self.motion_pool = None
+        if cfg.motion_start_prob > 0:
+            self.motion_pool = MotionStartPool(self, extra)
 
         n = self.num_envs
         self.target = torch.zeros(n, 3, device=self.device)
@@ -182,6 +201,11 @@ class HydraulicControlEnv(VecEnv):
 
             contract["sensors"] = SENSOR_CONTRACT
             contract["sensor_randomization"] = self.sensors.contract()
+        if self.motion_pool is not None:
+            contract["motion_start"] = {
+                "prob": self.cfg.motion_start_prob,
+                "seconds": self.cfg.motion_start_s,
+            }
         if self.joint_speed_limits is not None:
             contract["joint_speed_limits_rad_s"] = self.joint_speed_limits.tolist()
             contract["governor_joint_speed_margin"] = self.cfg.governor_joint_speed_margin
@@ -266,6 +290,8 @@ class HydraulicControlEnv(VecEnv):
         self._update_command(resample=True)
         self._obs = self._compute_observations()
         self.common_step_counter += 1
+        if self.motion_pool is not None and self.common_step_counter % cfg.motion_pool_refresh_steps == 0:
+            self.motion_pool.refresh()
         return self._obs, reward, dones.long(), extras
 
     # ---- Task internals -----------------------------------------------------------------------------------------
@@ -332,8 +358,6 @@ class HydraulicControlEnv(VecEnv):
         cfg = self.cfg
         count = len(ids)
         self.plant.reset(ids, self._sample_poses(count))
-        if self.sensors is not None:
-            self.sensors.reset(ids)
         self.episode_length_buf[ids] = 0
         if cfg.randomize:
             low, high = cfg.valve_gain_range
@@ -346,7 +370,23 @@ class HydraulicControlEnv(VecEnv):
             self.plant.action_delay[ids] = torch.randint(
                 0, cfg.action_delay_max_steps + 1, (count,), device=self.device
             )
+        moving = ids[:0]
+        if self.motion_pool is not None:
+            moving = ids[torch.rand(count, device=self.device) < cfg.motion_start_prob]
+            moving = self.motion_pool.load(moving)
+        if self.sensors is not None:
+            self.sensors.reset(ids)
+            self.sensors.prime(moving)
         self.requested[ids] = 0
+        if len(moving):
+            # The request starts at the motion already under way (a stale command), then slews to the new target.
+            _, twist = self.plant.tip_state()
+            twist = twist[moving]
+            twist[:, :2] *= (
+                cfg.speed_max / twist[:, :2].norm(dim=1, keepdim=True).clamp_min(1e-9)
+            ).clamp_max(1)
+            twist[:, 2].clamp_(-cfg.pitch_rate_max, cfg.pitch_rate_max)
+            self.requested[moving] = twist
         self._sample_targets(ids)
 
     def _sample_targets(self, ids: torch.Tensor) -> None:
@@ -391,3 +431,69 @@ class HydraulicControlEnv(VecEnv):
         self.requested[:, :2] += linear
         self.requested[:, 2] += delta[:, 2].clamp(-cfg.angular_accel * dt, cfg.angular_accel * dt)
         self.command[:], self.intervention[:] = self.governor(self.plant.q, self.plant.v, self.requested)
+
+
+class MotionStartPool:
+    """States already in motion, for episodes that should not start at rest (Egli & Hutter start theirs after
+    1.2 s of a position controller). A separate batch of the same plant, with its own model per row matching
+    the environments' (row ``i`` runs model ``i % models``), is driven by a joint-space P controller toward
+    random nearby poses. Rows that end invalid, at an end stop or in collision are never handed out.
+    """
+
+    def __init__(self, env: HydraulicControlEnv, extra_models: tuple):
+        cfg = env.cfg
+        self.env = env
+        self.models = 1 + len(extra_models)
+        size = cfg.motion_pool_size - cfg.motion_pool_size % self.models
+        if size < self.models:
+            raise ValueError("motion_pool_size must hold at least one row per actuator model")
+        self.plant = HydraulicPlant(cfg.model_path, env.kin, size, env.device, env.settings, extra_models)
+        self.ticks = round(cfg.motion_start_s / env.settings.dt)
+        self.good = torch.zeros(size, dtype=torch.bool, device=env.device)
+        self.refresh()
+
+    @torch.no_grad()
+    def refresh(self) -> None:
+        env, plant = self.env, self.plant
+        size, device = plant.count, env.device
+        rows = torch.arange(size, device=device)
+        start = env._sample_poses(size)
+        plant.reset(rows, start)
+        limits = env.kin.limits[:3]
+        margin = env.cfg.reset_joint_margin
+        goal = (start[:, :3] + (2 * torch.rand(size, 3, device=device) - 1) * 0.6).clamp(
+            limits[:, 0] + margin, limits[:, 1] - margin
+        )
+        gain = 1.0 + 4.0 * torch.rand(size, 1, device=device)
+        reach = 0.3 + 0.7 * torch.rand(size, 1, device=device)  # largest valve opening per row
+        bad = torch.zeros(size, dtype=torch.bool, device=device)
+        # A raw action of atanh(u) makes the plant's tanh send exactly u.
+        for tick in range(self.ticks):
+            u = (gain * (goal - plant.q[:, :3])).clamp(-1, 1) * reach
+            plant.begin_action(torch.atanh(u.clamp(-0.999, 0.999)))
+            plant.step()
+            bad |= plant.invalid | plant.limit_hit
+            if tick % 10 == 9 or tick == self.ticks - 1:  # the arm moves well under a link width in 0.1 s
+                bad |= env.kin.colliding(plant.q)
+        self.good = ~bad
+
+    def load(self, ids: torch.Tensor) -> torch.Tensor:
+        """Continue environments ``ids`` from random good pool rows of their own model; returns those loaded."""
+        if not len(ids):
+            return ids
+        group = ids % self.models
+        loaded = torch.zeros(len(ids), dtype=torch.bool, device=ids.device)
+        rows = torch.zeros_like(ids)
+        for k in range(self.models):
+            mine = (group == k).nonzero().flatten()
+            candidates = (
+                self.good & (torch.arange(len(self.good), device=ids.device) % self.models == k)
+            ).nonzero()
+            if not len(mine) or not len(candidates):
+                continue
+            pick = torch.randint(len(candidates), (len(mine),), device=ids.device)
+            rows[mine] = candidates.flatten()[pick]
+            loaded[mine] = True
+        ids, rows = ids[loaded], rows[loaded]
+        self.env.plant.copy_state(ids, self.plant, rows)
+        return ids

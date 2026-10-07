@@ -63,8 +63,9 @@ def main(argv=None) -> int:
         "--mlp",
         nargs="+",
         default=[f"mlp={ROOT / 'models/controller_proto/model_1798.pt'}"],
-        metavar="NAME=CHECKPOINT",
-        help="one or more policy checkpoints to run as controllers (default: the prototype, named mlp)",
+        metavar="NAME=CHECKPOINT[@HZ]",
+        help="one or more policy checkpoints to run as controllers (default: the prototype, named mlp); "
+        "@HZ runs one at another policy rate than it was trained at",
     )
     parser.add_argument("--mpc_model", type=Path, default=DEFAULT_MODEL, help="network the MPC plans with")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="network the plant runs")
@@ -111,7 +112,9 @@ def main(argv=None) -> int:
         elif name == "mlp":
             for item in args.mlp:
                 label, _, path = item.partition("=")
-                controllers[label] = PolicyController(ControllerPolicy(Path(path), args.device))
+                path, _, hz = path.partition("@")
+                policy = ControllerPolicy(Path(path), args.device, allow_pivot=True)
+                controllers[label] = PolicyController(policy, policy_hz=int(hz) if hz else None)
         elif name == "mpc":
             controllers[name] = MPPIController(args.mpc_model, MPPIConfig(seed=args.seed))
 

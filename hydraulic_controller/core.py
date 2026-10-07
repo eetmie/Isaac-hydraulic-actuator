@@ -199,7 +199,11 @@ class HydraulicPlant:
     unscaled history. It emulates the measured model-vs-machine speed spread without leaving the model's data range.
 
     ``extra_models`` spreads the environments over further actuator networks (see ``MixedModelBatch``).
+    ``tracked_point`` picks the point whose twist is observed and tracked (``kinematics.TRACKED_POINTS``).
     """
+
+    # Everything that defines an environment's motion and its histories (see ``copy_state``).
+    STATE = ("q", "v", "_v_model", "u", "u_cmd", "u_cmd_history", "_queue", "latched")
 
     def __init__(
         self,
@@ -209,8 +213,10 @@ class HydraulicPlant:
         device: str,
         settings: ControllerSettings | None = None,
         extra_models: tuple = (),
+        tracked_point: str = "tip",
     ):
         self.settings = settings or ControllerSettings()
+        self.tracked_point = tracked_point
         self.device = device
         self.count = count
         self.kinematics = kinematics
@@ -250,6 +256,19 @@ class HydraulicPlant:
         self.limit_hit[ids] = False
         self.velocity_clipped[ids] = False
         self.model.reset(ids)
+
+    def copy_state(self, ids: torch.Tensor, source: HydraulicPlant, rows: torch.Tensor) -> None:
+        """Continue environments ``ids`` from ``source``'s ``rows``: pose, motion and all histories.
+
+        Hidden perturbations stay this plant's own; the velocity is rescaled by this plant's ``speed_scale``.
+        """
+        for name in self.STATE:
+            getattr(self, name)[ids] = getattr(source, name)[rows]
+        for name in ("q_history", "v_history", "u_history", "primed"):
+            getattr(self.model, name)[ids] = getattr(source.model, name)[rows]
+        self.v[ids] = self._v_model[ids] * self.speed_scale[ids]
+        for flag in (self.invalid, self.limit_hit, self.velocity_clipped):
+            flag[ids] = False
 
     def begin_action(self, actions: torch.Tensor) -> None:
         """Map unconstrained policy actions to normalized valve commands with tanh."""
@@ -298,9 +317,11 @@ class HydraulicPlant:
     def tip_state(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Return tip pose [m, m, rad] and the tip twist [m/s, m/s, rad/s] driven by the three arm joints.
 
-        Carriage pitch is excluded: rocking cannot be controlled through the valves, so it is not tracked.
+        Carriage pitch is excluded: rocking cannot be controlled through the valves, so it is not tracked. With
+        ``tracked_point="pivot"`` both describe the bucket joint instead of the tip.
         """
-        pose, jacobian = self.kinematics.pose_jacobian(self.q)
+        kin, point = self.kinematics, self.tracked_point
+        pose, jacobian = kin.pose_jacobian(self.q) if point == "tip" else kin.pose_jacobian(self.q, point)
         twist = torch.einsum("nij,nj->ni", jacobian[:, :, :3], self.v[:, :3])
         return pose, twist
 
@@ -313,7 +334,13 @@ class HydraulicPlant:
             (self.v[:, None], self.model.v_history[:, :-1] * self.speed_scale[:, None]), dim=1
         )
         return assemble_observation(
-            self.q, history_v, self.u_cmd_history, self.model.source.u_stride, self.kinematics, command
+            self.q,
+            history_v,
+            self.u_cmd_history,
+            self.model.source.u_stride,
+            self.kinematics,
+            command,
+            self.tracked_point,
         )
 
     def contract(self) -> dict:
@@ -338,6 +365,7 @@ class HydraulicPlant:
             "action_transform": "tanh",
             "observation_dim": self.observe(self.u * 0).shape[1],
             "observation_fields": OBSERVATION_FIELDS,
+            **({"tracked_point": self.tracked_point} if self.tracked_point != "tip" else {}),
         }
 
 

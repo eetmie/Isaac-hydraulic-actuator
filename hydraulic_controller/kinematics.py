@@ -13,6 +13,7 @@ from .core import DEFAULT_ASSET, JOINT_NAMES, ControllerSettings, wrap_angle
 DRAWING_BOX = np.array([0.32, 0.72, -0.30, 0.20], dtype=np.float64)
 # Carriage-pitch extremes [rad] a drawable pose must also be solvable at, since the carriage rocks passively.
 STROKE_PITCHES = (-0.052, 0.052)
+TRACKED_POINTS = ("tip", "pivot")
 
 
 class ExcavatorKinematics:
@@ -165,11 +166,19 @@ class ExcavatorKinematics:
         self.collision_pairs = [tuple(pair) for pair in geometry["collision_pairs"]]
         return self
 
-    def pose_jacobian(self, q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return tip pose [m, m, rad] and Jacobian with respect to four angles [rad]."""
+    def pose_jacobian(self, q: torch.Tensor, point: str = "tip") -> tuple[torch.Tensor, torch.Tensor]:
+        """Return tip pose [m, m, rad] and Jacobian with respect to four angles [rad].
+
+        ``point="pivot"`` tracks the bucket joint instead of the tip: same bucket angle, and the bucket joint's
+        column has no linear part, so linear and angular motion decouple (Egli & Hutter, RA-L 2022).
+        """
+        if point not in TRACKED_POINTS:
+            raise ValueError(f"unknown tracked point {point!r}")
         transforms, joints = self._transforms(q)
-        tip_frame = transforms[-1] @ self.tip
-        point = tip_frame[:, :3, 3]
+        if point == "tip":
+            point = (transforms[-1] @ self.tip)[:, :3, 3]
+        else:
+            point = joints[2][:, :3, 3]
         blade = transforms[-1][:, :3, 1]  # bucket-local +Y points toward the cutting lip
         angle = torch.atan2(-blade[:, 2], blade[:, 0])
         pose = torch.cat((point[:, ::2], angle[:, None]), dim=1)
@@ -180,6 +189,17 @@ class ExcavatorKinematics:
             linear = torch.linalg.cross(axis, point - frame[:, :3, 3])[:, ::2]
             columns.append(torch.cat((linear, axis[:, 1:2]), dim=1))
         return pose, torch.stack(columns, dim=-1)
+
+    def tip_offset(self, angle: torch.Tensor) -> torch.Tensor:
+        """Tip minus pivot [m] in X/Z [..., 2] for bucket angles [rad]; the bucket is one rigid body."""
+        if not hasattr(self, "_tip_offset"):
+            q = torch.zeros(1, 4, device=self.limits.device)
+            tip, pivot = self.pose_jacobian(q)[0], self.pose_jacobian(q, "pivot")[0]
+            self._tip_offset = (tip[0, :2] - pivot[0, :2], tip[0, 2])
+        offset, angle0 = self._tip_offset
+        turn = angle - angle0
+        c, s = turn.cos(), turn.sin()  # rotation about +Y as in _transforms: x' = c x + s z, z' = -s x + c z
+        return torch.stack((c * offset[0] + s * offset[1], -s * offset[0] + c * offset[1]), dim=-1)
 
     def build_collision_grid(
         self,
@@ -348,11 +368,13 @@ class CommandGovernor:
         settings: ControllerSettings,
         joint_speed_limits: torch.Tensor | None = None,
         speed_margin: float = 0.8,
+        point: str = "tip",
     ):
         self.kin = kinematics
         self.cfg = settings
         self.joint_speed_limits = joint_speed_limits
         self.speed_margin = speed_margin
+        self.point = point
 
     def __call__(self, q: torch.Tensor, v: torch.Tensor, requested: torch.Tensor):
         """Return admitted [m/s, m/s, rad/s] commands and intervention fractions."""
@@ -361,7 +383,7 @@ class CommandGovernor:
         speed = command[:, :2].norm(dim=1, keepdim=True)
         command[:, :2] *= (cfg.speed_max / speed.clamp_min(1e-8)).clamp_max(1)
         command[:, 2].clamp_(-cfg.pitch_rate_max, cfg.pitch_rate_max)
-        _, jac = self.kin.pose_jacobian(q)
+        _, jac = self.kin.pose_jacobian(q) if self.point == "tip" else self.kin.pose_jacobian(q, self.point)
         weights = q.new_tensor([1.0, 1.0, 0.2])
         j = jac[:, :, :3] * weights[None, :, None]
         # Commands describe the arm-driven twist; passive carriage rocking is neither commanded nor tracked.

@@ -14,7 +14,9 @@ from .core import CONTRACT_VERSION, ControllerSettings, model_fingerprint, resol
 class ControllerPolicy:
     """Deterministic actor with checkpoint normalization and verified plant metadata."""
 
-    def __init__(self, checkpoint: str | Path, device: str = "cpu"):
+    def __init__(self, checkpoint: str | Path, device: str = "cpu", allow_pivot: bool = False):
+        """``allow_pivot`` admits checkpoints that track the bucket joint; only ``PolicyController`` converts tip
+        requests for them, so every other runner refuses them."""
         import yaml
         from rsl_rl.models import MLPModel
         from tensordict import TensorDict
@@ -25,6 +27,11 @@ class ControllerPolicy:
         if self.contract["version"] != CONTRACT_VERSION or self.contract["action_transform"] != "tanh":
             raise ValueError("Unsupported hydraulic controller checkpoint contract")
         self.settings = ControllerSettings(**self.contract["settings"])
+        self.tracked_point = self.contract.get("tracked_point", "tip")
+        if self.tracked_point != "tip" and not allow_pivot:
+            raise ValueError(
+                f"{self.checkpoint} tracks the bucket {self.tracked_point}; this runner sends tip requests"
+            )
         self.model_path = resolve_path(self.contract["model_path"])
         self.asset_path = resolve_path(self.contract["asset_path"])
         if model_fingerprint(self.model_path) != self.contract["model_files"]:
@@ -74,6 +81,7 @@ class ControllerPolicy:
             self.settings,
             None if limits is None else torch.tensor(limits, device=self.device),
             margin,
+            self.tracked_point,
         )
 
     @torch.no_grad()
@@ -98,10 +106,20 @@ class PolicyController:
     becomes a twist request ``v_ref + kp (p_ref - p)`` with the bucket angle held by ``kp_angle``, as in
     ``benchmark.run_trajectories``. The training-time governor admits it, and the actor's tanh output is held
     until the next policy tick. Tip tasks only.
+
+    ``policy_hz`` runs the policy at another rate than it was trained at (it must divide 100). For a checkpoint
+    that tracks the bucket pivot, the tip reference becomes a pivot reference by the bucket's rigid offset.
     """
 
-    def __init__(self, policy: ControllerPolicy, kp: float = 3.0, kp_angle: float = 3.0):
+    def __init__(
+        self, policy: ControllerPolicy, kp: float = 3.0, kp_angle: float = 3.0, policy_hz: int | None = None
+    ):
         self.policy, self.kp, self.kp_angle = policy, kp, kp_angle
+        self.decimation = policy.settings.decimation
+        if policy_hz is not None:
+            if 100 % policy_hz:
+                raise ValueError("policy_hz must divide the 100 Hz hydraulic rate")
+            self.decimation = 100 // policy_hz
 
     def reset(self, task) -> None:
         from .core import HydraulicModelBatch
@@ -117,6 +135,12 @@ class PolicyController:
         self.history.reset(torch.arange(task.count, device=device), task.q0)
         self.governor = self.policy.governor(task.kin)
         self.task, self.v_ref = task, task.tip_velocity()
+        self.point = self.policy.tracked_point
+        self.reference = task.tip_ref
+        if self.point == "pivot":
+            # The bucket angle is held along the reference, so the pivot moves with the tip's velocity.
+            self.reference = task.tip_ref.clone()
+            self.reference[..., :2] -= task.kin.tip_offset(task.tip_ref[..., 2])
         self.u = torch.zeros(task.count, 3, device=device)
 
     @torch.no_grad()
@@ -124,13 +148,13 @@ class PolicyController:
         from .core import wrap_angle
 
         self.history.push(q, v, self.u)
-        if k % self.policy.settings.decimation == 0:
+        if k % self.decimation == 0:
             task = self.task
-            pose, _ = task.kin.pose_jacobian(q)
-            reference = task.tip_ref[k]
+            pose, _ = task.kin.pose_jacobian(q, self.point)
+            reference = self.reference[k]
             requested = torch.zeros_like(self.u)
             requested[:, :2] = self.v_ref[k, :, :2] + self.kp * (reference[:, :2] - pose[:, :2])
             requested[:, 2] = self.kp_angle * wrap_angle(reference[:, 2] - pose[:, 2])
             command, _ = self.governor(q, v, requested)
-            self.u = torch.tanh(self.policy(self.history.observe(task.kin, command)))
+            self.u = torch.tanh(self.policy(self.history.observe(task.kin, command, self.point)))
         return self.u

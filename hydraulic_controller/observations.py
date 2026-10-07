@@ -10,9 +10,12 @@ from dataclasses import asdict, dataclass
 import torch
 
 
-def assemble_observation(q, velocity_history, command_history, u_stride, kin, command):
-    """Assemble policy inputs from angles [rad], rates [rad/s], and twist commands [m/s, m/s, rad/s]."""
-    pose, jac = kin.pose_jacobian(q)
+def assemble_observation(q, velocity_history, command_history, u_stride, kin, command, point="tip"):
+    """Assemble policy inputs from angles [rad], rates [rad/s], and twist commands [m/s, m/s, rad/s].
+
+    ``point`` is the tracked point (``kinematics.TRACKED_POINTS``); pose and twist are that point's.
+    """
+    pose, jac = kin.pose_jacobian(q) if point == "tip" else kin.pose_jacobian(q, point)
     twist = torch.einsum("nij,nj->ni", jac[:, :, :3], velocity_history[:, 0, :3])
     return torch.cat(
         (
@@ -60,9 +63,9 @@ class MeasuredHistory:
         self.v[:, 0] = velocity
         self.u[:, 0] = preceding_command
 
-    def observe(self, kin, command):
+    def observe(self, kin, command, point="tip"):
         """Return the shared observation vector for a twist command [m/s, m/s, rad/s]."""
-        return assemble_observation(self.q, self.v, self.u, self.u_stride, kin, command)
+        return assemble_observation(self.q, self.v, self.u, self.u_stride, kin, command, point)
 
 
 @dataclass
@@ -113,6 +116,15 @@ class SensorObservation:
         self.v_queue[ids] = 0
         self.history.reset(ids, self.plant.q[ids])
 
+    def prime(self, ids):
+        """Fill selected histories with the plant's own past motion, for episodes that start mid-motion."""
+        plant = self.plant
+        self.history.v[ids] = torch.cat(
+            (plant.v[ids, None], plant.model.v_history[ids, :-1] * plant.speed_scale[ids, None]), dim=1
+        )
+        self.history.u[ids] = plant.u_cmd_history[ids]
+        self.v_queue[ids] = plant.v[ids, None]
+
     def step(self):
         """Sample sensors once after a physical 100 Hz plant step."""
         # Shared link errors induce correlations between adjacent relative joints.
@@ -126,7 +138,7 @@ class SensorObservation:
 
     def observe(self, command):
         """Return hardware-style observations without altering the plant [SI units]."""
-        return self.history.observe(self.plant.kinematics, command)
+        return self.history.observe(self.plant.kinematics, command, self.plant.tracked_point)
 
     def contract(self):
         """Describe the training sensor perturbations."""
