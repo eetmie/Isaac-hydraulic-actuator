@@ -24,6 +24,27 @@ SENSOR_CONTRACT = {
 }
 
 
+def policy_joint_offset(imu: dict, contract: dict = SENSOR_CONTRACT) -> np.ndarray:
+    """Map runtime joint angles to training calibration by a fixed offset [rad].
+
+    With parallel Y axes, mounting rotations do not affect gyro Y rates.
+    A corrected link pitch is raw pitch minus its mounting angle. Therefore
+    training-relative positions equal runtime positions plus adjacent
+    differences of (runtime mounting - training mounting).
+    """
+    runtime = []
+    for role in contract["roles"]:
+        quat = np.asarray(imu["mounting_offsets_quat"][role], dtype=float)
+        if quat.shape != (4,) or not np.isfinite(quat).all() or abs(quat[1]) + abs(quat[3]) > 1e-6:
+            raise ValueError("Calibration transfer requires finite pure-Y mounting quaternions")
+        if np.linalg.norm(quat) < 0.5:
+            raise ValueError("Mounting quaternion must be nonzero")
+        runtime.append(2 * np.arctan2(quat[2], quat[0]))
+    delta = np.asarray(runtime) - np.asarray(contract["mount_pitch_rad"])
+    delta = np.arctan2(np.sin(delta), np.cos(delta))
+    return np.r_[np.diff(delta), delta[0]].astype(np.float32)
+
+
 def aligned_rates(gyro_y_dps: np.ndarray) -> np.ndarray:
     """Relative boom/arm/bucket rates and base pitch rate [rad/s].
 

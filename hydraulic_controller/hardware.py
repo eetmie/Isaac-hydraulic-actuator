@@ -13,6 +13,20 @@ import numpy as np
 from .sensors import ROLES, aligned_rates, imu_positions
 
 
+def raw_imu_values(snapshot):
+    """Flatten same-packet sensor-frame accel [g] / gyro [deg/s] by physical index."""
+    accel = np.asarray(getattr(snapshot, "raw_accel", None), dtype=np.float64)
+    gyro = np.asarray(getattr(snapshot, "raw_gyro", None), dtype=np.float64)
+    if (
+        accel.shape != (4, 3)
+        or gyro.shape != (4, 3)
+        or not np.isfinite(accel).all()
+        or not np.isfinite(gyro).all()
+    ):
+        raise ValueError("Same-packet XYZ raw accelerometer/gyro data for all four IMUs is required")
+    return np.concatenate((accel, gyro), axis=1).ravel().tolist()
+
+
 class ImuReader:
     """Read one immutable same-packet snapshot from kaivuriprokkis.
 
@@ -28,6 +42,7 @@ class ImuReader:
         self.previous_device_us = None
         self.fresh_time = None
         self.clock_lag = 0.0
+        self.snapshot = None
 
     def read(self, now=None):
         """Return q [rad], qdot [rad/s], and the source device clock [us]."""
@@ -54,6 +69,7 @@ class ImuReader:
         gyros["base"] = snapshot.base_imu_gyro
         quats = np.stack([snapshot.imu_by_role[role] for role in ROLES])
         gyro_y = np.array([gyros[role][1] for role in ROLES])
+        self.snapshot = snapshot
         return imu_positions(quats, corrected=True), aligned_rates(gyro_y), stamp
 
 

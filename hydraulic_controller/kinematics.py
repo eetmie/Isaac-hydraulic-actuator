@@ -264,9 +264,10 @@ class ExcavatorKinematics:
             collided |= ~separated.any(dim=1)
         return collided
 
-    def valid(self, q: torch.Tensor, margin: float = 0.06) -> torch.Tensor:
+    def valid(self, q: torch.Tensor, margin: float | None = None) -> torch.Tensor:
         """Check finite, in-limit, nonintersecting configurations [rad]."""
         # The passive pitch channel has its own measured +/-3 degree bound, not an arm margin.
+        margin = getattr(self, "joint_margin", 0.06) if margin is None else margin
         margins = q.new_tensor([margin, margin, margin, 0.0])
         inside = ((q >= self.limits[:, 0] + margins) & (q <= self.limits[:, 1] - margins)).all(1)
         return torch.isfinite(q).all(1) & inside & ~self.colliding(q)

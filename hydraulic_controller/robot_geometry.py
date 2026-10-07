@@ -101,10 +101,12 @@ def profile_from_usd(kin: ExcavatorKinematics, source: dict) -> dict:
     return result
 
 
-def policy_twist(q, physical_twist, robot, policy_kin):
+def policy_twist(q, physical_twist, robot, policy_kin, *, policy_q=None):
     """Map physical cutting-tip twist [m/s, m/s, rad/s] to the policy's trained tip."""
     _, real_jac = robot.pose_jacobian(q)
-    _, learned_jac = policy_kin.pose_jacobian(q)
+    # A corrected mounting calibration changes measured relative joint zeros.
+    # The frozen policy continues observing its original training calibration.
+    _, learned_jac = policy_kin.pose_jacobian(q if policy_q is None else policy_q)
     j = real_jac[:, :, :3]
     # A weighted condition check avoids blindly amplifying commands at a singularity.
     weighted = j * q.new_tensor([1.0, 1.0, 0.2])[None, :, None]
