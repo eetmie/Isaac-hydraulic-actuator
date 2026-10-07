@@ -211,14 +211,16 @@ The JSON `passes` list marks partially recorded passes. Continuous sessions
 end on A; their session result is separate from individual pass scores.
 
 ```bash
-../kaivuriprokkis/.venv-lerobot/bin/python run_robot_circle.py check --policy_hz 100
-../kaivuriprokkis/.venv-lerobot/bin/python run_robot_circle.py run --continuous --policy_hz 100 --log runs/circle_mlp_100hz_session_01.csv
+../kaivuriprokkis/.venv-lerobot/bin/python run_robot_circle.py check
+../kaivuriprokkis/.venv-lerobot/bin/python run_robot_circle.py run --continuous --log runs/circle_mlp_20hz_session_01.csv
 ```
 
-`--policy_hz 100` is an experiment with the frozen actor trained at 20 Hz.
-The actor sees fresh history at 100 Hz; the expensive twist projection and
-command governor stay at 20 Hz. It does not retrain the actor or change its
-100 Hz history spacing. The default remains 20 Hz. For continuous PID use
+The actor runs at its trained 20 Hz by default. `--policy_hz 100` is an
+experiment with the same frozen actor: it sees fresh history at 100 Hz, while
+the twist projection and governor stay at 20 Hz. On 2026-10-07 it chattered at
+6–7 Hz on the machine (valve travel ~20/s against the PID's 1.7/s; see
+`drive_logs/20261007_circle_mlp_vs_pid`). The history holds the controller's own
+command for each interval, as in training, not the delayed emitted value. For continuous PID use
 `--continuous --controller pid_tuned --pid_gains runs/hardware_circle/pid_gains.yaml`.
 Passive carriage rocking allows +/-3 degrees (`--max_carriage_pitch_deg`),
 matching the model geometry. The configurable driven-joint velocity guard

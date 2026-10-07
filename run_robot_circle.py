@@ -490,7 +490,11 @@ def run(args) -> None:
                 if not bool(bundle.robot_kin.valid(qt)[0]):
                     raise ValueError("Measured joint state is outside joint/collision margins")
                 policy_q = qt + policy_offset
-                bundle.history.push(policy_q, vt, torch.tensor(emitted[None]))
+                # Training histories hold the controller's own command for the preceding interval;
+                # the emitted value trails it by the direct-command thread (~2 ticks), which the
+                # actor never saw. A blocked gate sends nothing, so it records zeros.
+                sent = requested if gate.armed else np.zeros(3, dtype=np.float32)
+                bundle.history.push(policy_q, vt, torch.tensor(sent[None], dtype=torch.float32))
                 pose = bundle.robot_kin.pose_jacobian(qt)[0][0].numpy()
                 elapsed = tick - started
                 released |= not bool(pad.LeftBumper)
