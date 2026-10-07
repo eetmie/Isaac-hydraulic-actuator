@@ -102,7 +102,8 @@ def plot_report(
     import matplotlib.pyplot as plt
 
     names = list(summaries)
-    colors = dict(zip(names, plt.rcParams["axes.prop_cycle"].by_key()["color"]))
+    palette = plt.get_cmap("tab10" if len(names) <= 10 else "tab20")
+    colors = {n: palette(i % palette.N) for i, n in enumerate(names)}
     fig = plt.figure(figsize=(17, 13), constrained_layout=True)
     grid = fig.add_gridspec(4, 4)
 
