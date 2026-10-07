@@ -52,6 +52,11 @@ def main(argv=None) -> int:
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="network the plant runs")
     parser.add_argument("--sensor_noise_deg", type=float, default=0.02)
     parser.add_argument("--plants", nargs="+", help="subset of benchmark plants; default all")
+    parser.add_argument(
+        "--all_lines",
+        action="store_true",
+        help="keep lines faster than the plant can follow (static-speed paths); still drop invalid paths",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--run_name", default="compare")
@@ -91,9 +96,12 @@ def main(argv=None) -> int:
     if args.plants:
         task_cfg = TaskConfig(**{**asdict(task_cfg), "plants": tuple(args.plants)})
     prep = prepare(task_cfg, args.model, DEFAULT_ASSET, args.device, robot.ik_lambda)
-    kept = int(prep.feasible.sum())
-    print(f"[INFO] {kept} of {len(prep.scenarios)} tip lines are feasible and kept")
-    prep = prep.subset(prep.feasible)
+    keep = prep.path_valid if args.all_lines else prep.feasible
+    print(
+        f"[INFO] {int(keep.sum())} of {len(prep.scenarios)} tip lines kept "
+        f"({'valid paths, reachable or not' if args.all_lines else 'feasible'})"
+    )
+    prep = prep.subset(keep)
 
     summaries, terms, traces = compare(prep, controllers, seed=args.seed)
     out_dir = args.out / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{args.run_name}"
