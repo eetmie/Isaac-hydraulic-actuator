@@ -1,0 +1,76 @@
+{
+  "version": 2,
+  "settings": {
+    "dt": 0.01,
+    "decimation": 5,
+    "speed_max": 0.12,
+    "pitch_rate_max": 0.3,
+    "joint_margin": 0.06,
+    "lookahead": 0.8,
+    "velocity_limit": 2.0
+  },
+  "policy_hz": 20.0,
+  "model_path": "models/arm_v5_steady",
+  "model_files": {
+    "model_meta.json": "38aa39124c534afb6aaad62d404cd452fc49ab5a6580bb729f9d0c0de968f46e",
+    "mlp_state_dict.pt": "325fee07327d34acc50544027274eaf43aeda8da5289cf3eb9455753d79db753",
+    "x_mean.npy": "d3c9b56e36d25275cbd2ae67f7045f37c2c898a9ffa718ae2d68549f7c3ca382",
+    "x_std.npy": "7bc3a90783b94256d6c187c2196d2c3c24147564802cf318c0db80e307b2281a",
+    "y_mean.npy": "f6de3c44d9a68b92f177301b329900aa282b977016e2b09ddb298e62d86c6f8c",
+    "y_std.npy": "9ea5025cdac62ede1358dbf313b35feaeb67a687d001aca9005d886a2934c32b"
+  },
+  "extra_model_paths": [
+    "models/arm_v4",
+    "models/arm_v5"
+  ],
+  "asset_path": "assets/excavator_bucket_rocking.usd",
+  "asset_sha256": "65ab510bcd62f708cbf861451d45ab495b0f04909c6f69490eb2fd2708993f21",
+  "joint_names": [
+    "revolute_lift",
+    "revolute_tilt",
+    "revolute_tool",
+    "revolute_carriage_pitch"
+  ],
+  "tip_path": "/excavator/bucket/ee_tip",
+  "command_frame": "lower_carriage_XZ_pitch_about_positive_Y",
+  "tracked_twist": "arm_joints_only",
+  "action_transform": "tanh",
+  "observation_dim": 164,
+  "observation_fields": [
+    "q",
+    "current_and_past_v_every_20ms",
+    "past_commanded_u",
+    "tip_xz",
+    "sin_pitch",
+    "cos_pitch",
+    "arm_tip_twist",
+    "admitted_command",
+    "command_minus_arm_tip_twist"
+  ],
+  "sensors": {
+    "version": 1,
+    "roles": [
+      "base",
+      "boom",
+      "arm",
+      "bucket"
+    ],
+    "velocity_source": "aligned_y_child_minus_parent",
+    "software_filter": "none",
+    "sampling": "latest_complete_packet_not_after_tick",
+    "bias": "firmware_startup_correction_only",
+    "carriage_pitch_zero_rad": -0.004821687005460262,
+    "mount_pitch_rad": [
+      0.0,
+      0.241728109123881,
+      0.017453221928437734,
+      0.0
+    ]
+  },
+  "sensor_randomization": {
+    "gyro_noise_std": 0.005,
+    "gyro_bias_max": 0.003,
+    "angle_noise_std": 0.003,
+    "delay_max_steps": 2
+  }
+}

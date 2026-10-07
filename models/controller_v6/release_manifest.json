@@ -1,0 +1,19 @@
+{
+  "version": "controller-v6",
+  "source": "logs/rsl_rl/hydraulic_controller/2026-10-07_04-41-52_v2_a256x2_s7_gyro/model_1798.pt",
+  "resumed_from": "logs/rsl_rl/hydraulic_controller/2026-10-07_04-10-13_v2_a256x2_s7_base/model_1499.pt",
+  "reason": "Best tracker of a 2026-10-07 sweep (actor 256x256, seed 7). Same two-stage recipe as controller-proto, trained against arm_v5_steady, arm_v4 and arm_v5 with reachable-relative command speeds and linear error penalties. Feasible tip lines, mean tip error nominal|worst plant: 1.42|1.78 mm on arm_v5_steady, 1.31|1.65 mm on arm_v4 (proto 1.48|2.01, 1.47|2.45); bucket angle error ~30% lower, valve travel ~20% lower.",
+  "plant": "models/arm_v5_steady",
+  "extra_plants": [
+    "models/arm_v4",
+    "models/arm_v5"
+  ],
+  "asset": "assets/excavator_bucket_rocking.usd",
+  "paths": "controller_contract.json and params/env.yaml store repository-relative paths",
+  "files": {
+    "model_1798.pt": "c5bda487e73d7ce0ed6ff22e3b2d0f487ad0c98e7e1c531ea39162dbb1873b9d",
+    "controller_contract.json": "3a92d1dc8d73c7bbdf30481f5e924337b30ee2d1dc91e1c15a0af3dffacdc69e",
+    "params/agent.yaml": "c4c14b1d50a50ad5d1e15b0f800ca3ce006e266283f3bac470ea2e2b3150126e",
+    "params/env.yaml": "027a474e9d42865c465f2d060a494750867ff4e5d9ec5d510748da1c6d756669"
+  }
+}
