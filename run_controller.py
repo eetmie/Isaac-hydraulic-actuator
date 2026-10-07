@@ -352,7 +352,9 @@ def entrypoint() -> int:
         return 0
 
     # Default to the Kit viewer, except when headless (a Kit visualizer cannot be configured without a display).
-    if not getattr(args_cli, "visualizer_explicit", False) and not args_cli.headless:
+    # Isaac Lab releases dropped --headless and visualizer_explicit; an explicit --visualizer is then the signal.
+    explicit = getattr(args_cli, "visualizer_explicit", False) or args_cli.visualizer is not None
+    if not explicit and not getattr(args_cli, "headless", False):
         args_cli.visualizer = ["kit"]
     app_launcher = AppLauncher(args_cli)
     run_interactive(args_cli, checkpoint, app_launcher.app)

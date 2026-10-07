@@ -39,10 +39,21 @@ def setup_scene(scene, stage, cfg):
     from isaaclab.sim import DomeLightCfg
     from pxr import UsdPhysics
 
+    # Isaac Lab releases removed InteractiveScene.clone_environments: publish a plan, spawn, then replicate.
+    plan = None
+    if not hasattr(scene, "clone_environments"):
+        from isaaclab.cloner import clone_plan_from_env_0
+
+        plan = clone_plan_from_env_0(scene.cloner_cfg, (cfg,), scene.num_envs, scene.cfg.env_spacing)
     robot = Articulation(cfg)
     anchor = UsdPhysics.FixedJoint.Define(stage, "/World/envs/env_0/Robot/Joints/world_fixed")
     anchor.CreateBody1Rel().SetTargets(["/World/envs/env_0/Robot/lower_carriage"])
-    scene.clone_environments(copy_from_source=False)
+    if plan is None:
+        scene.clone_environments(copy_from_source=False)
+    else:
+        from isaaclab.cloner import replicate
+
+        replicate(plan, replicate_physics=scene.cfg.replicate_physics)
     scene.articulations["robot"] = robot
     if scene.device == "cpu":
         scene.filter_collisions(global_prim_paths=[])
@@ -109,6 +120,12 @@ class ViewportSketch:
             box: Drawing rectangle ``[x_min, x_max, z_min, z_max]`` [m].
         """
         try:
+            # Newer Isaac Lab experiences do not load debug draw by default.
+            import omni.kit.app
+
+            omni.kit.app.get_app().get_extension_manager().set_extension_enabled_immediate(
+                "isaacsim.util.debug_draw", True
+            )
             from isaacsim.util.debug_draw import _debug_draw
         except ImportError:
             self._draw = None
