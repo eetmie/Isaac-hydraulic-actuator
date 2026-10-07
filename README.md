@@ -220,7 +220,13 @@ experiment with the same frozen actor: it sees fresh history at 100 Hz, while
 the twist projection and governor stay at 20 Hz. On 2026-10-07 it chattered at
 6–7 Hz on the machine (valve travel ~20/s against the PID's 1.7/s; see
 `drive_logs/20261007_circle_mlp_vs_pid`). The history holds the controller's own
-command for each interval, as in training, not the delayed emitted value. For continuous PID use
+command for each interval, as in training, not the delayed emitted value.
+The run loop writes the valves in the tick it computes them, as `simple_drive.py`
+did when the actuator data was recorded (`--valve_writes loop`, default). The
+2026-10-07 sessions went through the robot controller's direct-command thread,
+about 20 ms later; `--valve_writes thread` keeps that path for comparison. If
+the loop stalls, the 150 ms PWM watchdog and the gate's policy timeout still
+stop the valves. For continuous PID use
 `--continuous --controller pid_tuned --pid_gains runs/hardware_circle/pid_gains.yaml`.
 Passive carriage rocking allows +/-3 degrees (`--max_carriage_pitch_deg`),
 matching the model geometry. The configurable driven-joint velocity guard

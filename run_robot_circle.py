@@ -353,6 +353,7 @@ def run(args) -> None:
             "slew_enabled": False,
             "policy_hz": args.policy_hz,
             "projection_hz": 20,
+            "valve_writes": args.valve_writes,
             "continuous": args.continuous,
             "max_carriage_pitch_deg": args.max_carriage_pitch_deg,
             "max_joint_velocity_rad_s": args.max_joint_velocity_rad_s,
@@ -403,12 +404,17 @@ def run(args) -> None:
             gate = OutputGate(hardware, deadman)
             hardware.send_named_pwm_commands = gate.write
             controller = ExcavatorController(hardware, control_config_file=str(control))
-            controller.enter_direct_command_mode(
-                hold_timeout_s=0.15,
-                decay_s=0.0,
-                blend_s=0.0,
-                joint_names=JOINTS,
-            )
+            if args.valve_writes == "thread":
+                controller.enter_direct_command_mode(
+                    hold_timeout_s=0.15,
+                    decay_s=0.0,
+                    blend_s=0.0,
+                    joint_names=JOINTS,
+                )
+            else:
+                # This loop writes the valves itself every tick, as simple_drive.py did when the
+                # actuator data was recorded; the controller thread keeps its state but writes nothing.
+                controller.suspend_ik_output()
             controller.start()
 
             def supervise():
@@ -576,7 +582,11 @@ def run(args) -> None:
                             gate.arm()
                             if not hardware.set_pump_enabled(True):
                                 raise RuntimeError("Hardware rejected pump enable")
-                    controller.give_direct_commands(dict(zip(JOINTS, requested.tolist(), strict=True)))
+                    if args.valve_writes == "thread":
+                        controller.give_direct_commands(dict(zip(JOINTS, requested.tolist(), strict=True)))
+                if args.valve_writes == "loop":
+                    # Every tick, held between actor updates; the gate zeroes it unless armed.
+                    gate.write(dict(zip(JOINTS, requested.tolist(), strict=True)))
                 radial = float(np.linalg.norm(pose[:2] - path.center) - path.radius)
                 values = [
                     elapsed,
@@ -848,7 +858,9 @@ def main() -> None:
         )
         if mode == "run":
             cmd.add_argument(
-                "--approach_output_limit", type=float, default=0.25,
+                "--approach_output_limit",
+                type=float,
+                default=0.25,
                 help="Symmetric normalized valve cap for the start-pose PID approach",
             )
             cmd.add_argument(
@@ -857,6 +869,14 @@ def main() -> None:
                 help="LB starts autonomous repeated passes; A stops; B starts logging",
             )
             cmd.add_argument("--max_error_mm", type=float, default=20)
+            cmd.add_argument(
+                "--valve_writes",
+                choices=("loop", "thread"),
+                default="loop",
+                help="loop: this 100 Hz loop writes the valves in the tick it computes them, as the "
+                "data recorder did; thread: the robot controller's direct-command thread writes them "
+                "(~20 ms later, the 2026-10-07 behaviour)",
+            )
             cmd.add_argument(
                 "--allow_timing_overruns",
                 action="store_true",

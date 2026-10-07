@@ -9,3 +9,5 @@
 *.npy binary
 # Frozen model metadata and normalizers must retain their release hashes.
 models/** -text whitespace=cr-at-eol
+# Recorded robot bundles are hash-pinned by their contract.json, byte for byte.
+drive_logs/** -text
