@@ -155,3 +155,23 @@ def test_replay_with_zero_gains_leaves_the_machine_at_rest():
     assert (traces["q"] - torch.tensor(HOME[:3])).abs().max() < 1e-4
     rows = metrics(cfg, scenarios, traces)
     assert len(rows) == len(scenarios) and not any(r["invalid"] for r in rows)
+
+
+def test_circle_reference_stays_on_the_circle_closes_and_turns_the_right_way():
+    from hydraulic_controller.core import DEFAULT_ASSET, HOME
+    from hydraulic_controller.kinematics import ExcavatorKinematics
+    from hydraulic_controller.tasks import Scenario, TaskConfig, reference
+
+    cfg = TaskConfig(families=("tip_circle",), duration_s=20.0)
+    scenarios = [Scenario("tip_circle", sense, 0.02, "nominal") for sense in ("ccw", "cw")]
+    q0 = torch.tensor([HOME, HOME])
+    pose0 = ExcavatorKinematics(DEFAULT_ASSET, "cpu").pose_jacobian(q0)[0]
+    _, tip = reference(cfg, scenarios, q0, pose0)
+    center = pose0[:, :2] - torch.tensor([cfg.circle_radius_m, 0.0])
+    radius = (tip[:, :, :2] - center).norm(dim=-1)
+    assert torch.allclose(radius, torch.full_like(radius, cfg.circle_radius_m), atol=1e-6)
+    assert torch.allclose(tip[-1], pose0, atol=1e-5)  # one full turn, back at the start, bucket angle held
+    quarter = round((cfg.lead_s + 0.5 * math.pi * cfg.circle_radius_m / 0.02) / 0.01)
+    assert (
+        tip[quarter, 0, 1] > pose0[0, 1] + 0.04 and tip[quarter, 1, 1] < pose0[1, 1] - 0.04
+    )  # ccw up, cw down

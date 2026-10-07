@@ -18,6 +18,15 @@ import torch
 from .closed_loop import rollout
 from .tasks import Prepared
 
+LABELS = {  # display names for the usual controllers; anything else shows as given
+    "pid_robot": "PID (robot gains)",
+    "pid_tuned": "PID (sim-tuned)",
+    "mpc": "MPC (MPPI)",
+    "proto": "MLP (prototype)",
+    "mlp": "MLP",
+    "v6": "MLP (V6)",
+}
+
 METRICS = {  # summary name: (rollout term, scale, how to pool over scenarios)
     "tip_mean_mm": ("tip_mean_mm", 1.0, "mean"),
     "tip_max_mm": ("tip_max_mm", 1.0, "max"),
@@ -181,4 +190,105 @@ def plot_report(
         ax.grid(alpha=0.3)
         vx.grid(alpha=0.3)
     fig.savefig(path, dpi=100)
+    plt.close(fig)
+
+
+def circle_deviation(prep: Prepared, traces: dict) -> torch.Tensor:
+    """Per-tick radial deviation |dist(tip, center) - radius| [mm] of each circle scenario once it starts, [T', N].
+
+    Timing-free: a tip that lags along the circle but stays on it is not charged (cf. the tip error terms).
+    """
+    radius = prep.cfg.circle_radius_m
+    steps = traces["tip"].shape[0]
+    t = torch.arange(1, steps + 1) * 0.01 - prep.cfg.lead_s
+    center = traces["tip_target"][0, :, :2].clone()
+    center[:, 0] -= radius
+    distance = (traces["tip"][t >= 0, :, :2] - center).norm(dim=-1)
+    return (distance - radius).abs() * 1000
+
+
+def summarize_circles(prep: Prepared, traces: dict) -> dict:
+    """Mean and worst radial deviation [mm] per sense, nominal plant and worst plant."""
+    out = {}
+    for sense in ("ccw", "cw"):
+        per_plant = {}
+        for plant in sorted({s.plant for s in prep.scenarios}):
+            rows = [i for i, s in enumerate(prep.scenarios) if s.joint == sense and s.plant == plant]
+            if rows:
+                dev = circle_deviation(prep, traces)[:, rows]
+                per_plant[plant] = {"mean_mm": float(dev.mean()), "worst_mm": float(dev.max())}
+        out[sense] = {
+            "nominal": per_plant.get("nominal"),
+            "worst_plant": max(per_plant.values(), key=lambda v: v["mean_mm"]) if per_plant else None,
+        }
+    return out
+
+
+def plot_circles(path: Path, prep: Prepared, traces: dict, speed_mm_s: float) -> None:
+    """One column per controller, counterclockwise above clockwise; every start overlaid about the circle center."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyArrowPatch
+
+    names = list(traces)
+    radius_mm = prep.cfg.circle_radius_m * 1000
+    starts = len({s.start for s in prep.scenarios})
+    fig, axes = plt.subplots(2, len(names), figsize=(4.3 * len(names), 10.6), squeeze=False)
+    fig.suptitle(f"{2 * radius_mm:g} mm circles at {speed_mm_s:g} mm/s, nominal plant", fontsize=15)
+    fig.text(
+        0.5,
+        0.925,
+        f"{starts} start poses per direction overlaid about the circle center; dashed = reference, dot = start",
+        ha="center",
+        fontsize=10,
+    )
+    angle = torch.linspace(0, 2 * torch.pi, 361)
+    for col, name in enumerate(names):
+        deviation = circle_deviation(prep, traces[name])
+        for row, (sense, label, color) in enumerate(
+            (("ccw", "Counterclockwise", "tab:blue"), ("cw", "Clockwise", "tab:red"))
+        ):
+            ax = axes[row, col]
+            rows = [i for i, s in enumerate(prep.scenarios) if s.joint == sense and s.plant == "nominal"]
+            center = traces[name]["tip_target"][0, rows, :2].clone()
+            center[:, 0] -= prep.cfg.circle_radius_m
+            for k, i in enumerate(rows):
+                xy = (traces[name]["tip"][:, i, :2] - center[k]) * 1000
+                ax.plot(xy[:, 0], xy[:, 1], color=color, lw=1.1, alpha=0.75)
+            ax.plot(radius_mm * angle.cos(), radius_mm * angle.sin(), "k--", lw=1.2)
+            ax.plot([radius_mm], [0], "ko", ms=5)
+            sweep = 1 if sense == "ccw" else -1
+            ax.add_patch(
+                FancyArrowPatch(
+                    (0.33 * radius_mm, -0.22 * radius_mm * sweep),
+                    (0.33 * radius_mm, 0.22 * radius_mm * sweep),
+                    connectionstyle=f"arc3,rad={0.35 * sweep}",
+                    arrowstyle="-|>",
+                    mutation_scale=14,
+                    color="gray",
+                    lw=1.5,
+                )
+            )
+            dev = deviation[:, rows]
+            title = f"{LABELS.get(name, name)}: {label}"
+            ax.set_title(
+                f"{title}\nmean deviation {dev.mean():.1f} mm, worst {dev.max():.1f} mm", fontsize=10
+            )
+            lim = radius_mm * 1.25
+            ax.set(xlim=(-lim, lim), ylim=(-lim, lim), aspect="equal")
+            ax.set_xlabel("X from circle center [mm]", fontsize=8)
+            ax.set_ylabel("Z from circle center [mm]", fontsize=8)
+            ax.grid(alpha=0.3)
+    fig.text(
+        0.5,
+        0.01,
+        "Simulation on the learned actuator model; not yet validated on hardware.",
+        ha="center",
+        fontsize=9,
+        color="dimgray",
+    )
+    fig.tight_layout(rect=(0, 0.03, 1, 0.91), h_pad=3.0)
+    fig.savefig(path, dpi=130)
     plt.close(fig)

@@ -73,7 +73,7 @@ def rollout(
     the ~0.6 m reach is ~10 mm) plus half the bucket-angle error in deg.
 
     * ``track``: mean error once the move starts; ``final``: mean error over the last ``tail_s``;
-    * ``overshoot``: largest travel past the end of the move (moved joint, or tip along the line);
+    * ``overshoot``: largest travel past the end of the move (moved joint, or tip along a line; 0 for circles);
     * ``tail_p2p``: summed peak-to-peak joint motion over the last ``tail_s`` (hunting, limit cycles);
     * ``valve_travel``: summed valve travel per second (chatter);
     * ``invalid``: 1 when the plant went non-finite or onto a joint limit.
@@ -104,13 +104,14 @@ def rollout(
     q0 = tile(prep.q0)
     plant.reset(torch.arange(count, device=device), q0)
 
-    is_tip = tile(torch.tensor([sc.family == "tip_line" for sc in prep.scenarios], device=device))
+    is_tip = tile(torch.tensor([sc.is_tip for sc in prep.scenarios], device=device))
+    is_line = tile(torch.tensor([sc.family == "tip_line" for sc in prep.scenarios], device=device))
     q_ref, tip_ref = tile_time(prep.q_ref), tile_time(prep.tip_ref)
     controller.reset(TaskBatch(kin, q0, q_ref, tip_ref, is_tip))
 
     moved = tile(
         torch.tensor(
-            [PID_JOINTS.index(sc.joint) if sc.family != "tip_line" else 0 for sc in prep.scenarios],
+            [PID_JOINTS.index(sc.joint) if not sc.is_tip else 0 for sc in prep.scenarios],
             device=device,
         )
     )
@@ -164,6 +165,9 @@ def rollout(
                 (tip[rows, line_axis] - tip_end[rows, line_axis]) * move_sign * 100,
                 torch.rad2deg((q[rows, moved] - q_end[rows, moved]) * move_sign),
             )
+            past = torch.where(
+                is_tip & ~is_line, 0.0, past
+            )  # a circle ends where it started: nothing to pass
             terms["overshoot"] = torch.maximum(terms["overshoot"], torch.nan_to_num(past).clamp_min(0))
         if t[k] >= t[-1] - cfg.tail_s:
             terms["final"] += err / n_tail
@@ -224,13 +228,16 @@ def _settle_time(err: torch.Tensor, band: float, t: torch.Tensor) -> float:
 
 
 def metrics(cfg: TaskConfig, scenarios: list[Scenario], traces: dict[str, torch.Tensor]) -> list[dict]:
-    """One row per scenario. Angles in deg, tip errors in mm, times in s after the move starts."""
+    """One row per joint scenario or tip line (circles are scored by ``comparison``). Angles in deg, tip errors in
+    mm, times in s after the move starts."""
     steps = traces["q"].shape[0]
     t = torch.arange(1, steps + 1) * DT - cfg.lead_s
     moving = t >= 0
     tail = t >= t[-1] - cfg.tail_s
     rows = []
     for n, s in enumerate(scenarios):
+        if s.family == "tip_circle":
+            continue
         u = traces["u"][:, n]
         du = (u[1:] - u[:-1]).abs().sum(1)
         row = {
