@@ -117,6 +117,10 @@ over 100 samples on the development PC. **Jetson timing is not yet measured.**
 
 ## First robot session: shadow only
 
+> **Historical (2026-09).** `run_robot_controller.py` and its shadow/rotate modes were removed when the
+> robot runtime moved to kaivuriprokkis `learned_control` (2026-10-08). Export with
+> `export_robot_bundle.py`; run the bucket circle there. The steps below record how the first session ran.
+
 Copy this project's Python source and `deployment_bucket/` bundle to the Jetson.
 The MLP plant, training logs and USD assets are not needed for bundle inference.
 Keep a copy of the simulation report for the later motion step. The original

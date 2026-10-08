@@ -133,124 +133,27 @@ simulation the MLP and the MPC have an advantage the PID lacks: they were traine
 on, or plan with, this very network.
 
 
-## Bucket circle on the real robot
+## Deploy to the real robot
 
-`run_robot_circle.py` runs the same 100 mm diameter, 20 mm/s X/Z circle with
-the learned controller or the simulation-tuned DLS/joint PID. Both feed the
-robot's existing 100 Hz direct-command output thread; the PID uses the same
-calculation as `tune_pid.py`, bypassing the production pose smoother. Slew,
-tracks and auxiliary outputs stay neutral. No shadow run is required.
-
-Use a separate `jetson_bucket` profile. Its origin is the slew bearing,
-boom-pivot height is 78.5 mm (confirmed by production CAD), and link vectors
-and the bucket cutting-tip offset come from the training USD. FK consumes
-relative joint angles, not authored USD body rotations. The blade's fixed
-orientation offset is handled by the runner; legacy robot FK reports the
-final joint-frame orientation. The arm IMU correction is +0.612 degrees;
-boom remains +13.850 degrees with the CAD magnitude 13.832 recorded pending
-sign verification. The frozen actor sees its original training joint zeros
-through an explicit calibration transform; physical FK and PID use the new
-mounting correction.
-
-Prepare on the development PC using Isaac Lab Python and a current copy of
-the robot's Jetson profile (the output directory must be new):
-
-```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_robot_circle.py prepare --bundle scripts\Isaac-hydraulic-actuator\runs\gyro_transfer\deployment_bucket --source_profile scripts\Isaac-hydraulic-actuator\runs\hardware_circle\source_profile --out scripts\Isaac-hydraulic-actuator\runs\hardware_circle\bucket
-```
-
-Install `bucket/profile/jetson_bucket` under the robot repository's
-`configuration_files/profiles/`. Copy this project's `run_robot_circle.py`,
-`hydraulic_controller/`, `actuators/` and `bucket/bundle` to a sibling runtime
-directory on the robot. The runner needs NumPy, PyTorch, PyYAML and the existing
-robot dependencies; running it needs no USD, Isaac Sim or RSL-RL.
-
-From the installed runtime directory on the robot:
+The robot runs controllers with kaivuriprokkis `learned_control` (see its
+README); it needs no copy of this repository. `export_robot_bundle.py` writes a
+self-contained bundle: TorchScript actor, geometry, collision grid, contract and
+reference cases the robot replays at load. First generate a robot profile whose
+arm geometry is the controller USD's (once per calibration), then export:
 
 ```bash
-../kaivuriprokkis/.venv-lerobot/bin/python run_robot_circle.py check
-../kaivuriprokkis/.venv-lerobot/bin/python run_robot_circle.py run --controller pid_tuned --pid_gains runs/hardware_circle/pid_gains.yaml --log runs/circle_pid_ccw_01.csv
-../kaivuriprokkis/.venv-lerobot/bin/python run_robot_circle.py run --controller mlp --log runs/circle_mlp_ccw_01.csv
+isaaclab.sh -p scripts/Isaac-hydraulic-actuator/export_robot_bundle.py profile \
+    --source_profile ../kaivuriprokkis/configuration_files/profiles/jetson --robot jetson_bucket \
+    --out ../kaivuriprokkis/configuration_files/profiles/jetson_bucket
+isaaclab.sh -p scripts/Isaac-hydraulic-actuator/export_robot_bundle.py export \
+    --checkpoint models/controller_v6/model_1798.pt --robot jetson_bucket \
+    --out ../kaivuriprokkis/learned_control/bundles/v6_jetson_bucket
 ```
 
-`check` is an offline geometry/actor check and opens no devices. `run` preflights
-the complete circle from the measured pose with the pump off. Release then hold
-**Left Bumper** to start; **B**, release or disconnect latches a stop. A one-second
-neutral history warmup is retained for inference. Each default run contains
-one lap, a one-second lead hold and two seconds of settling. Use `--direction cw`
-for the opposite direction. Run each controller/direction three times, alternate
-controller order and return to the same starting pose between runs.
+`training/test_robot_parity.py` checks the robot copy (sibling checkout) against
+the training code: kinematics, governor, observations, sensors, circle and PID.
+Real-robot sessions are kept under `drive_logs/`.
 
-Logs are exclusive CSV plus JSON files, with reference/measured tip positions,
-joint angles/rates, requested/emitted valves, timing, tracking and radial errors,
-and a completion/fault result. PID gains are loaded per run; `pid_robot` uses
-the profile gains and `pid_tuned` requires an explicit gains file. Software stops
-include stale sensors/controller, loop overruns, position/angle error, and
-joint/collision margins. Use the physical emergency stop and free-space motion.
-IMU-based FK metrics describe internal tracking; externally measured tip motion
-is needed to establish physical accuracy. Hardware acceptance remains pending.
-
-After recording runs, compare matching profiles/speeds without opening hardware:
-
-```bash
-../kaivuriprokkis/.venv-lerobot/bin/python run_robot_circle.py compare --logs runs/circle_pid_ccw_01.csv runs/circle_mlp_ccw_01.csv --out runs/circle_comparison --plot
-```
-
-This writes a comparison table and overlays the circles and timed errors.
-Stopped trials remain in the report. Plotting optionally needs matplotlib.
-
-For repeated warm-up/testing passes, use `--continuous`. Release then press LB
-once to start; it may then be released. **A stops motion and the pump**;
-**B starts logging** for the rest of the session. Gamepad disconnect and the
-existing fault limits still stop the robot. Passes reuse the original center,
-including the lead/settling holds. Warm-up samples are discarded until B;
-recorded samples stay in a compact preallocated RAM buffer. B starts a
-five-minute recording (`--record_seconds 300`); the pump shuts off at the end,
-then all passes are saved together with `pass_index`. A can stop and save early.
-The JSON `passes` list marks partially recorded passes. Continuous sessions
-end on A; their session result is separate from individual pass scores.
-
-```bash
-../kaivuriprokkis/.venv-lerobot/bin/python run_robot_circle.py check
-../kaivuriprokkis/.venv-lerobot/bin/python run_robot_circle.py run --continuous --log runs/circle_mlp_20hz_session_01.csv
-```
-
-The actor runs at its trained 20 Hz by default. `--policy_hz 100` is an
-experiment with the same frozen actor: it sees fresh history at 100 Hz, while
-the twist projection and governor stay at 20 Hz. On 2026-10-07 it chattered at
-6–7 Hz on the machine (valve travel ~20/s against the PID's 1.7/s; see
-`drive_logs/20261007_circle_mlp_vs_pid`). The history holds the controller's own
-command for each interval, as in training, not the delayed emitted value.
-The run loop writes the valves in the tick it computes them, as `simple_drive.py`
-did when the actuator data was recorded (`--valve_writes loop`, default). The
-2026-10-07 sessions went through the robot controller's direct-command thread,
-about 20 ms later; `--valve_writes thread` keeps that path for comparison. If
-the loop stalls, the 150 ms PWM watchdog and the gate's policy timeout still
-stop the valves. For continuous PID use
-`--continuous --controller pid_tuned --pid_gains runs/hardware_circle/pid_gains.yaml`.
-Passive carriage rocking allows +/-3 degrees (`--max_carriage_pitch_deg`),
-matching the model geometry. The configurable driven-joint velocity guard
-(`--max_joint_velocity_rad_s`, default 2) applies only to boom/arm/bucket.
-Passive carriage rate is logged but does not trip that driven-joint limit.
-To approach the same start as an earlier successful trial, add
-`--start_from_log runs/hardware_circle/circle_start_pose.csv` and a `--pid_gains`
-file. LB authorizes a quintic joint approach at <=0.05 rad/s reference speed,
-with valves capped to +/-0.25 by default (`--approach_output_limit 0.5` allows
-the stronger tested approach), followed by the selected circle controller.
-`--joint_margin_deg 0` removes the extra software margin within the pinned
-joint bounds; it does not expand those bounds. The approach and circle are
-checked independently before the pump starts.
-Recorded CSVs include sensor-frame acceleration XYZ [g] and gyro XYZ [deg/s]
-for every physical IMU (`imu0_...` through `imu3_...`), plus the role-corrected
-quaternions and gyro XYZ. These share the exact packet used by the controller;
-firmware startup gyro-bias removal precedes this capture. The JSON records the
-sensor-to-role mapping. CSV encoding, disk writes and per-pass scoring occur
-only after pump/output shutdown. No saving occurs during circle transitions.
-For timing diagnostics, `--allow_timing_overruns` records and reschedules missed
-loop deadlines instead of aborting on 30 ms lateness / 40 ms computation.
-The independent sensor/controller freshness gate and operator stops remain
-active. The requested actor rate and measured timing are stored in the log;
-use actual timestamps when evaluating the high-rate experiment.
 
 ## Example rollouts
 

@@ -100,7 +100,8 @@ class ControllerPolicy:
 
 
 class PolicyController:
-    """The trained valve policy as a ``closed_loop`` controller, run the way ``run_robot_controller.py`` runs it.
+    """The trained valve policy as a ``closed_loop`` controller, run the way the robot runs it
+    (kaivuriprokkis ``learned_control``).
 
     Every 100 Hz tick pushes the measurement into a ``MeasuredHistory``. Every ``decimation`` ticks the reference
     becomes a twist request ``v_ref + kp (p_ref - p)`` with the bucket angle held by ``kp_angle``, as in
