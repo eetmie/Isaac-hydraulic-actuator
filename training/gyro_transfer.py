@@ -7,6 +7,8 @@ Run as ``python -m training.gyro_transfer prepare|train|evaluate`` from the repo
 Preparation reuses accepted recording segments and frozen splits, but reconstructs
 inputs from the last complete IMU packet available at each recorded host tick.
 Centred velocity labels remain *targets/diagnostics only* in the gyro experiment.
+New robot recordings (operator drives and circle runs) enter ``<out>/data`` through
+``training.drive_logs prepare`` instead of the archive.
 """
 
 from __future__ import annotations
