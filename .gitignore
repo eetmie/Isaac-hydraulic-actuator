@@ -12,5 +12,6 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-soil2d/
 .pytest_cache/
 .ruff_cache/

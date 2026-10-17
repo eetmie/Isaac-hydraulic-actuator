@@ -96,6 +96,14 @@ Gamepad mode maps the left stick to tip X/Z velocity, right stick X to bucket
 pitch rate, and B to reset. Everything here is free-space motion in simulation;
 digging, contact and the real machine are not validated.
 
+## Experiment with 2D soil
+
+The standalone [`soil2d` prototype](soil2d/README.md) runs a prescribed bucket
+through a pile using CPU or CUDA MPM, with a viewer, reaction-force logs, CSV
+trajectory replay and batched benchmarks. It needs no Isaac Sim. The soil is
+experimental and is not coupled to the learned hydraulic actuator yet; see its
+README for setup, model assumptions and the Newton comparison plan.
+
 ## Tune the robot's joint PID
 
 The same plant can tune the classic controller on the real machine: the

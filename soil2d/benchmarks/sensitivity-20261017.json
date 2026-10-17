@@ -1,0 +1,262 @@
+{
+  "status": "ok",
+  "device": "NVIDIA GB10",
+  "note": "Two resolutions and two timesteps; exploratory sensitivity, not a convergence claim. Collision radius held at 0.011 m.",
+  "results": [
+    {
+      "run": "mvp-dig",
+      "scene": {
+        "width": 1.0,
+        "height": 0.6,
+        "dx": 0.01,
+        "dt": 0.0005,
+        "frame_dt": 0.02,
+        "effective_width": 0.11,
+        "gravity": 9.81,
+        "soil_min": [
+          0.4,
+          0.035
+        ],
+        "soil_max": [
+          0.78,
+          0.225
+        ],
+        "particles_per_axis": 2,
+        "seed": 7,
+        "material": {
+          "density": 1500.0,
+          "young_modulus": 20000,
+          "poisson_ratio": 0.2,
+          "friction_angle_deg": 32,
+          "cohesion_pa": 0,
+          "tool_friction": 0.4,
+          "floor_friction": 0.5
+        },
+        "bucket": {
+          "vertices": [
+            [
+              -0.08,
+              0.055
+            ],
+            [
+              -0.075,
+              -0.055
+            ],
+            [
+              0.025,
+              -0.065
+            ],
+            [
+              0.08,
+              -0.015
+            ]
+          ],
+          "wall_thickness": 0.012,
+          "contact_padding_cells": 0.5
+        }
+      },
+      "particles": 2888,
+      "duration_s": 7.999999999999917,
+      "peak_force_n": 232.30743076423659,
+      "bucket_impulse_xz_ns": [
+        -93.33293771191072,
+        118.15696457373556
+      ],
+      "force_magnitude_integral_ns": 193.06278440407888,
+      "worst_cfl": 0.3326207116018235,
+      "max_projection_m": 0.00012831948697566986,
+      "validation": {
+        "valid": true,
+        "mass_kg_per_env": 11.913,
+        "grid_mass_kg": [
+          11.91299996464222
+        ],
+        "max_speed_m_s": 0.025893913581967354,
+        "cfl": 0.1937447854089736,
+        "min_elastic_determinant": 0.4927358031272888,
+        "max_projection_m": 0.0
+      },
+      "source_sha256": {
+        "__init__.py": "0e5427c9f40006205e9af651ed4f7b10f2d7fea23a254e8dde4dd21d7348f81f",
+        "__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+        "cli.py": "97ab962d1216c13f20955509bd7df2a71079ddf183b08792975a0eda40d85859",
+        "config.py": "4dda8a63a0622382d78af62484a33021ef8a2e7893ac8364741653d9a08429b0",
+        "kernels.py": "fe14c587bd024c6829defcddeb39100346b7bce702bee21d368b2452d523e180",
+        "render.py": "1d8b734a19b19c2cbc4b6b7c0bf027d45de86e1b52563b5c241125713beadef1",
+        "solver.py": "163bbf592fcdb91552d8d8d38ae02eee314c00c007e8af86601d6ff6f938b061",
+        "trajectory.py": "7d385ed640a938d10de6410be0e987e5c41c88f0b3a5a43dccb2a4c740705462"
+      },
+      "tracking_csv_sha256": "78271f70263b223893c2d7bbb19bc7027949d9b5e56846197f121d5ae7e51db0"
+    },
+    {
+      "run": "dt-half",
+      "scene": {
+        "width": 1.0,
+        "height": 0.6,
+        "dx": 0.01,
+        "dt": 0.00025,
+        "frame_dt": 0.02,
+        "effective_width": 0.11,
+        "gravity": 9.81,
+        "soil_min": [
+          0.4,
+          0.035
+        ],
+        "soil_max": [
+          0.78,
+          0.225
+        ],
+        "particles_per_axis": 2,
+        "seed": 7,
+        "material": {
+          "density": 1500.0,
+          "young_modulus": 20000,
+          "poisson_ratio": 0.2,
+          "friction_angle_deg": 32,
+          "cohesion_pa": 0,
+          "tool_friction": 0.4,
+          "floor_friction": 0.5
+        },
+        "bucket": {
+          "vertices": [
+            [
+              -0.08,
+              0.055
+            ],
+            [
+              -0.075,
+              -0.055
+            ],
+            [
+              0.025,
+              -0.065
+            ],
+            [
+              0.08,
+              -0.015
+            ]
+          ],
+          "wall_thickness": 0.012,
+          "contact_padding_cells": 0.5
+        }
+      },
+      "particles": 2888,
+      "duration_s": 7.999999999999917,
+      "peak_force_n": 263.1535215022967,
+      "bucket_impulse_xz_ns": [
+        -99.99610180345509,
+        138.11941338809672
+      ],
+      "force_magnitude_integral_ns": 211.3351517668168,
+      "worst_cfl": 0.15915101541928944,
+      "max_projection_m": 4.2319297790527344e-05,
+      "validation": {
+        "valid": true,
+        "mass_kg_per_env": 11.913,
+        "grid_mass_kg": [
+          11.91299997800176
+        ],
+        "max_speed_m_s": 0.005421456880867481,
+        "cfl": 0.0963605812869593,
+        "min_elastic_determinant": 0.5119428634643555,
+        "max_projection_m": 0.0
+      },
+      "source_sha256": {
+        "__init__.py": "0e5427c9f40006205e9af651ed4f7b10f2d7fea23a254e8dde4dd21d7348f81f",
+        "__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+        "cli.py": "97ab962d1216c13f20955509bd7df2a71079ddf183b08792975a0eda40d85859",
+        "config.py": "4dda8a63a0622382d78af62484a33021ef8a2e7893ac8364741653d9a08429b0",
+        "kernels.py": "fe14c587bd024c6829defcddeb39100346b7bce702bee21d368b2452d523e180",
+        "render.py": "1d8b734a19b19c2cbc4b6b7c0bf027d45de86e1b52563b5c241125713beadef1",
+        "solver.py": "163bbf592fcdb91552d8d8d38ae02eee314c00c007e8af86601d6ff6f938b061",
+        "trajectory.py": "7d385ed640a938d10de6410be0e987e5c41c88f0b3a5a43dccb2a4c740705462"
+      },
+      "tracking_csv_sha256": "e8debfb2bd629b81f3324f92db4787af76d8972c6183265c9bfadf5644e0589f"
+    },
+    {
+      "run": "grid-half",
+      "scene": {
+        "width": 1.0,
+        "height": 0.6,
+        "dx": 0.005,
+        "dt": 0.00025,
+        "frame_dt": 0.02,
+        "effective_width": 0.11,
+        "gravity": 9.81,
+        "soil_min": [
+          0.4,
+          0.035
+        ],
+        "soil_max": [
+          0.78,
+          0.225
+        ],
+        "particles_per_axis": 2,
+        "seed": 7,
+        "material": {
+          "density": 1500.0,
+          "young_modulus": 20000.0,
+          "poisson_ratio": 0.2,
+          "friction_angle_deg": 32.0,
+          "cohesion_pa": 0.0,
+          "tool_friction": 0.4,
+          "floor_friction": 0.5
+        },
+        "bucket": {
+          "vertices": [
+            [
+              -0.08,
+              0.055
+            ],
+            [
+              -0.075,
+              -0.055
+            ],
+            [
+              0.025,
+              -0.065
+            ],
+            [
+              0.08,
+              -0.015
+            ]
+          ],
+          "wall_thickness": 0.012,
+          "contact_padding_cells": 1.0
+        }
+      },
+      "particles": 11552,
+      "duration_s": 7.999999999999917,
+      "peak_force_n": 174.19067967589072,
+      "bucket_impulse_xz_ns": [
+        -69.85997783024074,
+        97.075282332133
+      ],
+      "force_magnitude_integral_ns": 150.9240921442959,
+      "worst_cfl": 0.3466209009061753,
+      "max_projection_m": 4.824623465538025e-05,
+      "validation": {
+        "valid": true,
+        "mass_kg_per_env": 11.913,
+        "grid_mass_kg": [
+          11.91299993195438
+        ],
+        "max_speed_m_s": 0.02548341639339924,
+        "cfl": 0.19372426054954522,
+        "min_elastic_determinant": 0.6000416874885559,
+        "max_projection_m": 0.0
+      },
+      "source_sha256": {
+        "__init__.py": "0e5427c9f40006205e9af651ed4f7b10f2d7fea23a254e8dde4dd21d7348f81f",
+        "__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+        "cli.py": "97ab962d1216c13f20955509bd7df2a71079ddf183b08792975a0eda40d85859",
+        "config.py": "4dda8a63a0622382d78af62484a33021ef8a2e7893ac8364741653d9a08429b0",
+        "kernels.py": "fe14c587bd024c6829defcddeb39100346b7bce702bee21d368b2452d523e180",
+        "render.py": "1d8b734a19b19c2cbc4b6b7c0bf027d45de86e1b52563b5c241125713beadef1",
+        "solver.py": "163bbf592fcdb91552d8d8d38ae02eee314c00c007e8af86601d6ff6f938b061",
+        "trajectory.py": "7d385ed640a938d10de6410be0e987e5c41c88f0b3a5a43dccb2a4c740705462"
+      },
+      "tracking_csv_sha256": "24d97cd13ea7adc6299c4879993ede82f7e85a9ceeb805033ba4e9836241858d"
+    }
+  ]
+}

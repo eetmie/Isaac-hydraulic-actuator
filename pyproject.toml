@@ -12,5 +12,5 @@ select = ["E4", "E7", "E9", "F", "I"]
 "training/test_*.py" = ["E402"]
 
 [tool.pytest.ini_options]
-testpaths = ["training"]
+testpaths = ["training", "soil2d/tests"]
 norecursedirs = ["local", "runs", ".git"]
