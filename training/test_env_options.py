@@ -142,3 +142,84 @@ def test_pivot_environment_observes_and_rewards_the_pivot():
     pose, _ = env.kin.pose_jacobian(env.plant.q, "pivot")
     torch.testing.assert_close(env.plant.tip_state()[0], pose)
     env.step(torch.zeros(8, 3))
+
+
+@needs_models
+@pytest.mark.parametrize("w, angular", [(0.0, 0.0), (1 / 3, 0.5), (1.0, 1.5)])
+def test_pose_priority_weights_rotation_like_fixed_angular_weights(w, angular):
+    """w scales both angular terms; w = 1/3 reproduces the fixed 0.5 / 0.5 weights the V6 recipe used."""
+    pytest.importorskip("rsl_rl")
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    fixed = HydraulicControlEnv(
+        HydraulicControlEnvCfg(
+            num_envs=64, device="cpu", seed=3, angular_weight=angular, angular_error_weight=angular
+        )
+    )
+    slider = HydraulicControlEnv(
+        HydraulicControlEnvCfg(num_envs=64, device="cpu", seed=3, pose_priority=True)
+    )
+    slider.priority.fill_(w)
+    actions = torch.randn(64, 3, generator=torch.Generator().manual_seed(1))
+    torch.testing.assert_close(slider.step(actions)[1], fixed.step(actions)[1])
+
+
+@needs_models
+def test_pose_priority_is_one_noise_free_observation_and_in_the_contract():
+    pytest.importorskip("rsl_rl")
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    env = HydraulicControlEnv(HydraulicControlEnvCfg(num_envs=32, device="cpu", pose_priority=True))
+    plain = env.plant.contract()
+    contract = env.contract()
+    obs = env.get_observations()
+    assert contract["observation_dim"] == plain["observation_dim"] + 1 == obs["policy"].shape[1]
+    assert contract["observation_fields"][-1] == "pose_priority"
+    assert contract["pose_priority"]["default"] == pytest.approx(1 / 3)
+    torch.testing.assert_close(obs["policy"][:, -1], env.priority)
+    assert obs["critic"].shape[1] == obs["policy"].shape[1] + 10
+    assert 0 <= env.priority.min() and env.priority.max() <= 1 and env.priority.std() > 0.1
+    for _ in range(3):
+        obs = env.step(torch.zeros(32, 3))[0]
+    torch.testing.assert_close(obs["policy"][:, -1], env.priority)
+
+
+@needs_models
+def test_carriage_rate_penalty_only_lowers_the_reward():
+    pytest.importorskip("rsl_rl")
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    rewards = {}
+    for weight in (0.0, 1.0):
+        env = HydraulicControlEnv(
+            HydraulicControlEnvCfg(num_envs=64, device="cpu", seed=3, carriage_rate_weight=weight)
+        )
+        generator = torch.Generator().manual_seed(1)
+        rewards[weight] = torch.stack(
+            [env.step(3 * torch.randn(64, 3, generator=generator))[1] for _ in range(6)]
+        )
+    assert (rewards[1.0] <= rewards[0.0] + 1e-6).all()
+    assert (rewards[1.0] < rewards[0.0] - 1e-4).any()
+
+
+@needs_models
+@pytest.mark.parametrize("hz", [10, 20, 25, 50])
+def test_time_scaled_rewards_weigh_each_second_alike_at_any_policy_rate(hz):
+    """Tracking and penalty terms are per 0.05 s: one simulated second weighs 20 units at every policy rate."""
+    pytest.importorskip("rsl_rl")
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    env = HydraulicControlEnv(HydraulicControlEnvCfg(num_envs=2, device="cpu", policy_hz=hz))
+    assert env.time_scale * hz == pytest.approx(20.0)
+
+
+def test_controller_policy_appends_the_pose_priority_slider():
+    from hydraulic_controller.policy import ControllerPolicy
+
+    policy = ControllerPolicy.__new__(ControllerPolicy)
+    policy.contract = {"observation_dim": 5, "pose_priority": {"default": 1 / 3}}
+    policy.has_pose_priority, policy.pose_priority = True, 0.75
+    policy.inference = lambda x: x
+    out = policy(torch.zeros(2, 4))
+    assert out.shape == (2, 5) and (out[:, -1] == 0.75).all()
+    assert policy(torch.ones(2, 5)).shape == (2, 5)  # already complete: left alone

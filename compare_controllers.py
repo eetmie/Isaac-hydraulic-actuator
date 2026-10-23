@@ -1,7 +1,8 @@
 """Compare the robot PID, the sim-tuned PID, the trained MLP policy and the MPC on the same tip tasks.
 
-Tip lines (default) or full circles, under every valve/speed perturbation; only paths the plant can actually
-follow count (see ``tasks``). Lines start from HOME and the central working poses, circles from the benchmark's
+Tip lines (default) or full circles, under every valve/speed perturbation. Every path runs, also ones faster
+than the plant can follow or whose reference leaves the joint limits; per_scenario.csv gives each path's
+``speed_ratio`` (required over achievable speed, see ``tasks``) and ``path_valid``. Lines start from HOME and the central working poses, circles from the benchmark's
 eight poses. No simulator is launched. From the Isaac Lab root::
 
     isaaclab.sh -p scripts/Isaac-hydraulic-actuator/compare_controllers.py \\
@@ -63,12 +64,16 @@ def main(argv=None) -> int:
         "--mlp",
         nargs="+",
         default=[f"mlp={ROOT / 'models/controller_proto/model_1798.pt'}"],
-        metavar="NAME=CHECKPOINT[@HZ]",
+        metavar="NAME=CHECKPOINT[@HZ][#PRIORITY]",
         help="one or more policy checkpoints to run as controllers (default: the prototype, named mlp); "
-        "@HZ runs one at another policy rate than it was trained at",
+        "@HZ runs one at another policy rate than it was trained at; #PRIORITY sets the pose-priority slider "
+        "[0, 1] of a checkpoint trained with one",
     )
     parser.add_argument("--mpc_model", type=Path, default=DEFAULT_MODEL, help="network the MPC plans with")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="network the plant runs")
+    parser.add_argument(
+        "--asset", type=Path, default=DEFAULT_ASSET, help="robot USD the tasks and plant kinematics use"
+    )
     parser.add_argument("--sensor_noise_deg", type=float, default=0.02)
     parser.add_argument("--task", choices=("lines", "circles"), default="lines")
     parser.add_argument(
@@ -78,11 +83,6 @@ def main(argv=None) -> int:
         "--speeds_mm_s", type=float, nargs="+", help="default: 20 40 70 (lines), 20 (circles)"
     )
     parser.add_argument("--plants", nargs="+", help="subset of benchmark plants; default all")
-    parser.add_argument(
-        "--all_lines",
-        action="store_true",
-        help="keep lines faster than the plant can follow (static-speed paths); still drop invalid paths",
-    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--run_name", default="compare")
@@ -112,8 +112,13 @@ def main(argv=None) -> int:
         elif name == "mlp":
             for item in args.mlp:
                 label, _, path = item.partition("=")
+                path, _, priority = path.partition("#")
                 path, _, hz = path.partition("@")
                 policy = ControllerPolicy(Path(path), args.device, allow_pivot=True)
+                if priority:
+                    if not policy.has_pose_priority:
+                        parser.error(f"{label}: {path} has no pose-priority input")
+                    policy.pose_priority = float(priority)
                 controllers[label] = PolicyController(policy, policy_hz=int(hz) if hz else None)
         elif name == "mpc":
             controllers[name] = MPPIController(args.mpc_model, MPPIConfig(seed=args.seed))
@@ -122,7 +127,7 @@ def main(argv=None) -> int:
     if starts == "working":
         where = {"start_tips": WORKING_STARTS}
     else:
-        kin = ExcavatorKinematics(DEFAULT_ASSET, args.device)
+        kin = ExcavatorKinematics(args.asset, args.device)
         where = {"include_home": False, "start_q": tuple(map(tuple, benchmark_poses(kin, 8).tolist()))}
     if args.task == "lines":
         speeds = tuple(v / 1000 for v in args.speeds_mm_s) if args.speeds_mm_s else TaskConfig.tip_speeds_m_s
@@ -141,13 +146,13 @@ def main(argv=None) -> int:
     task_cfg = TaskConfig(**where, **task, sensor_noise_deg=args.sensor_noise_deg)
     if args.plants:
         task_cfg = TaskConfig(**{**asdict(task_cfg), "plants": tuple(args.plants)})
-    prep = prepare(task_cfg, args.model, DEFAULT_ASSET, args.device, robot.ik_lambda)
-    keep = prep.path_valid if args.all_lines else prep.feasible
+    prep = prepare(task_cfg, args.model, args.asset, args.device, robot.ik_lambda)
+    outside = int((~prep.path_valid).sum())
+    too_fast = int((prep.path_valid & ~prep.feasible).sum())
     print(
-        f"[INFO] {int(keep.sum())} of {len(prep.scenarios)} tip {args.task} kept "
-        f"({'valid paths, reachable or not' if args.all_lines else 'feasible'})"
+        f"[INFO] running all {len(prep.scenarios)} tip {args.task}: {too_fast} are faster than the nominal plant "
+        f"can follow, {outside} have a reference that leaves the joint limits or collides"
     )
-    prep = prep.subset(keep)
 
     summaries, terms, traces = compare(prep, controllers, seed=args.seed)
     out_dir = args.out / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{args.run_name}"
@@ -155,6 +160,7 @@ def main(argv=None) -> int:
         "task_config": asdict(task_cfg),
         "scenarios": [s.name + "@" + s.plant for s in prep.scenarios],
         "plant_model": str(args.model),
+        "asset": str(args.asset),
         "pid_robot": asdict(robot),
         "pid_gains_file": str(args.pid_gains) if args.pid_gains else None,
         "mlp_checkpoints": dict(item.partition("=")[::2] for item in args.mlp),

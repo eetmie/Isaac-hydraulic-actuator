@@ -43,6 +43,8 @@ def export_bundle(policy, directory: Path, profile_dir: Path, cases: int = 64):
     directory, profile_dir = Path(directory), Path(profile_dir)
     if policy.contract.get("tracked_point", "tip") != "tip":
         raise ValueError("The robot runtime sends bucket-tip requests; export a tip-tracking policy")
+    if "pose_priority" in policy.contract:
+        raise ValueError("The robot runtime does not send the pose-priority slider yet")
     config = yaml.safe_load((profile_dir / "control_config.yaml").read_text())
     geometry = ExcavatorKinematics(policy.asset_path, "cpu")
     geometry.build_collision_grid()

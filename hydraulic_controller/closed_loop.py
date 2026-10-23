@@ -28,7 +28,7 @@ from .kinematics import ExcavatorKinematics
 from .tasks import DT, PID_JOINTS, Prepared, Scenario, TaskConfig, prepare
 
 COST_TERMS = ("track", "final", "overshoot", "tail_p2p", "valve_travel", "invalid")
-REPORT_TERMS = ("tip_mean_mm", "tip_max_mm", "tip_final_mm", "pitch_mean_deg")
+REPORT_TERMS = ("tip_mean_mm", "tip_max_mm", "tip_final_mm", "pitch_mean_deg", "carriage_rms_deg_s")
 
 
 @dataclass
@@ -78,7 +78,8 @@ def rollout(
     * ``valve_travel``: summed valve travel per second (chatter);
     * ``invalid``: 1 when the plant went non-finite or onto a joint limit.
 
-    ``REPORT_TERMS`` add plain tip errors in mm and the bucket angle error in deg (tip lines; NaN otherwise).
+    ``REPORT_TERMS`` add plain tip errors in mm, the bucket angle error in deg and the RMS carriage pitch rate in
+    deg/s (rocking) once the move starts (tip lines; NaN otherwise).
     With ``record`` (``copies == 1``) it also returns per-tick traces on the CPU.
     """
     cfg, kin, device = prep.cfg, prep.kin, prep.q0.device
@@ -159,6 +160,7 @@ def rollout(
             terms["track"] += err / n_moving
             terms["tip_mean_mm"] += tip_mm / n_moving
             terms["pitch_mean_deg"] += pitch_deg / n_moving
+            terms["carriage_rms_deg_s"] += torch.rad2deg(plant.v[:, 3]).square() / n_moving
             terms["tip_max_mm"] = torch.maximum(terms["tip_max_mm"], tip_mm)
             past = torch.where(
                 is_tip,
@@ -186,6 +188,7 @@ def rollout(
         (plant.q[:, :3] <= kin.limits[:3, 0] + 1e-6) | (plant.q[:, :3] >= kin.limits[:3, 1] - 1e-6)
     ).any(1)
     terms["tail_p2p"] = torch.rad2deg(tail_hi - tail_lo).sum(1)
+    terms["carriage_rms_deg_s"] = terms["carriage_rms_deg_s"].sqrt()
     terms["invalid"] = (plant.invalid | at_limit).float()
     for key in REPORT_TERMS:
         terms[key] = torch.where(is_tip, terms[key], math.nan)

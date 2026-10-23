@@ -45,7 +45,11 @@ def agent_config(args, policy_hz: int) -> dict:
             "hidden_dims": list(args.actor_dims),
             "activation": args.activation,
             "obs_normalization": True,
-            "distribution_cfg": {"class_name": "GaussianDistribution", "init_std": 0.5, "std_type": "scalar"},
+            "distribution_cfg": {
+                "class_name": "GaussianDistribution",
+                "init_std": args.init_std,
+                "std_type": "scalar",
+            },
         },
         "critic": {
             "class_name": "MLPModel",
@@ -87,6 +91,9 @@ def main() -> int:
     parser.add_argument("--rollout_s", type=float, default=1.2, help="PPO rollout length per env [s].")
     parser.add_argument("--curriculum_iterations", type=int, default=300)
     parser.add_argument("--entropy_coef", type=float, default=0.002)
+    parser.add_argument(
+        "--init_std", type=float, default=0.5, help="Initial exploration noise std of the valve actions."
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--actor_dims", type=int, nargs="+", default=[128, 128], help="Actor hidden layer widths."

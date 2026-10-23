@@ -1,7 +1,7 @@
 """Score several controllers on the same closed-loop tip tasks and report them side by side.
 
-Every controller runs the same feasible tip lines (``tasks``) through ``closed_loop.rollout``. The summary
-reports plain units: tip error in mm, bucket angle error in deg, overshoot past the line end in mm, valve travel
+Every controller runs the same tip lines (``tasks``) through ``closed_loop.rollout``. The summary
+reports plain units: tip error in mm, bucket angle error in deg, carriage rocking in deg/s, overshoot past the line end in mm, valve travel
 per second, and failures. Each figure is given over all plants and for the nominal and worst plant, plus per
 commanded speed.
 """
@@ -33,6 +33,7 @@ METRICS = {  # summary name: (rollout term, scale, how to pool over scenarios)
     "tip_p95_max_mm": ("tip_max_mm", 1.0, "p95"),
     "tip_final_mm": ("tip_final_mm", 1.0, "mean"),
     "pitch_mean_deg": ("pitch_mean_deg", 1.0, "mean"),
+    "carriage_rms_deg_s": ("carriage_rms_deg_s", 1.0, "mean"),
     "overshoot_mm": ("overshoot", 10.0, "mean"),  # rollout reports tip overshoot in mm / 10
     "valve_travel_per_s": ("valve_travel", 1.0, "mean"),
     "failures": ("invalid", 1.0, "sum"),
@@ -93,12 +94,17 @@ def write_report(out_dir: Path, prep: Prepared, summaries: dict, terms: dict, in
     keys = list(next(iter(terms.values())))
     with open(out_dir / "per_scenario.csv", "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["controller", "scenario", "plant", "start", "speed_mm_s", *keys])
+        writer.writerow(
+            ["controller", "scenario", "plant", "start", "speed_mm_s", "speed_ratio", "path_valid", *keys]
+        )
         for name, values in terms.items():
             for i, s in enumerate(prep.scenarios):
                 writer.writerow(
-                    [name, s.name, s.plant, s.start, s.size * 1000, *(float(values[k][i]) for k in keys)]
-                )
+                    [
+                        name, s.name, s.plant, s.start, s.size * 1000, float(prep.speed_ratio[i]),
+                        int(prep.path_valid[i]), *(float(values[k][i]) for k in keys),
+                    ]
+                )  # fmt: skip
 
 
 def plot_report(

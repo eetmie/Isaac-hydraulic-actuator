@@ -51,6 +51,9 @@ class ControllerPolicy:
         self.actor.load_state_dict(state["actor_state_dict"], strict=True)
         self.actor.eval().requires_grad_(False)
         self.inference = self.actor.as_jit().to(device).eval()
+        # Pose-priority slider [0, 1] for checkpoints trained with one (see HydraulicControlEnvCfg.pose_priority).
+        self.has_pose_priority = "pose_priority" in self.contract
+        self.pose_priority = self.contract["pose_priority"]["default"] if self.has_pose_priority else None
 
     def governor(self, kinematics, speed_margin: float | None = None):
         """Command governor, configured as during training unless ``speed_margin`` overrides it.
@@ -86,7 +89,13 @@ class ControllerPolicy:
 
     @torch.no_grad()
     def __call__(self, observations: torch.Tensor) -> torch.Tensor:
-        """Return deterministic raw actions; the shared plant applies tanh once."""
+        """Return deterministic raw actions; the shared plant applies tanh once.
+
+        For a pose-priority checkpoint, observations without the slider column get :attr:`pose_priority` appended.
+        """
+        if self.has_pose_priority and observations.shape[1] == self.contract["observation_dim"] - 1:
+            slider = torch.full_like(observations[:, :1], float(self.pose_priority))
+            observations = torch.cat((observations, slider), dim=1)
         return self.inference(observations)
 
     def export(self, directory: str | Path | None = None) -> Path:

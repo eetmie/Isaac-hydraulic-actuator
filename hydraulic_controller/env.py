@@ -81,6 +81,19 @@ class HydraulicControlEnvCfg:
     linear_error_weight: float = 0.0
     angular_error_weight: float = 0.0
     termination_penalty: float = 10.0
+    # Pose-priority slider (opt-in). Each episode draws w in [0, 1], appended to the policy and critic
+    # observations; the angular terms then weigh w * pose_angular_weight_max and w * pose_angular_error_weight_max
+    # instead of angular_weight and angular_error_weight. w = 0 tracks the tip position only, w = 1 weighs bucket
+    # rotation like position (the linear terms sum to 1 + track_fine_weight). The default maxima make w = 1/3
+    # reproduce angular_weight = angular_error_weight = 0.5.
+    pose_priority: bool = False
+    pose_angular_weight_max: float = 1.5
+    pose_angular_error_weight_max: float = 1.5
+    pose_priority_resample_prob: float = 0.2  # chance that a new command target also draws a new w
+    # Carriage rocking penalty, per 0.05 s: weight * (carriage pitch rate / scale)^2. Abrupt valve steps rock the
+    # carriage, so this favours smooth commands. Units: rad/s for the scale.
+    carriage_rate_weight: float = 0.0
+    carriage_rate_scale: float = 0.02
 
     # Tracked point: "tip" (bucket tip) or "pivot" (bucket joint). With "pivot" the bucket joint only turns the
     # bucket; tip requests are converted outside the policy (``policy.PolicyController``).
@@ -183,6 +196,7 @@ class HydraulicControlEnv(VecEnv):
         self.command = torch.zeros_like(self.target)
         self.intervention = torch.zeros(n, device=self.device)
         self.hold_timer = torch.zeros(n, device=self.device)
+        self.priority = torch.full((n,), 1 / 3, device=self.device)
         self._noise = self._noise_scale() if cfg.randomize else None
         self._reset_idx(torch.arange(n, device=self.device))
         self._update_command(resample=False)
@@ -209,6 +223,15 @@ class HydraulicControlEnv(VecEnv):
         if self.joint_speed_limits is not None:
             contract["joint_speed_limits_rad_s"] = self.joint_speed_limits.tolist()
             contract["governor_joint_speed_margin"] = self.cfg.governor_joint_speed_margin
+        if self.cfg.pose_priority:
+            contract["observation_dim"] += 1
+            contract["observation_fields"] = [*contract["observation_fields"], "pose_priority"]
+            contract["pose_priority"] = {
+                "default": 1 / 3,
+                "angular_weight_max": self.cfg.pose_angular_weight_max,
+                "angular_error_weight_max": self.cfg.pose_angular_error_weight_max,
+                "meaning": "0 tracks tip position only, 1 weighs bucket rotation like position",
+            }
         return contract
 
     @torch.no_grad()
@@ -228,6 +251,7 @@ class HydraulicControlEnv(VecEnv):
         angular = torch.zeros_like(track)
         speed_error = torch.zeros_like(track)
         angle_rate_error = torch.zeros_like(track)
+        carriage = torch.zeros_like(track)
         collided = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         for _ in range(self.decimation):
             plant.step()
@@ -242,20 +266,27 @@ class HydraulicControlEnv(VecEnv):
             angular += torch.exp(-error[:, 2].square() / sigma_w**2)
             speed_error += e2.sqrt()
             angle_rate_error += error[:, 2].abs()
+            carriage += plant.v[:, 3].square()
             collided |= self.kin.colliding(plant.q)
-        for value in (track, angular, speed_error, angle_rate_error):
+        for value in (track, angular, speed_error, angle_rate_error, carriage):
             value /= self.decimation
 
+        if cfg.pose_priority:
+            angular_weight = self.priority * cfg.pose_angular_weight_max
+            angular_error_weight = self.priority * cfg.pose_angular_error_weight_max
+        else:
+            angular_weight, angular_error_weight = cfg.angular_weight, cfg.angular_error_weight
         rate_scale = lerp(cfg.action_rate_scale)
         reward = self.time_scale * (
-            track + cfg.angular_weight * angular - cfg.effort * plant.u_cmd.square().sum(1)
+            track + angular_weight * angular - cfg.effort * plant.u_cmd.square().sum(1)
         )
         reward -= rate_scale * (
             cfg.action_rate_l1 * du.abs().sum(1) + cfg.action_rate_l2 * du.square().sum(1)
         )
         reward -= self.time_scale * (
             cfg.linear_error_weight * speed_error / cfg.speed_max
-            + cfg.angular_error_weight * angle_rate_error / cfg.pitch_rate_max
+            + angular_error_weight * angle_rate_error / cfg.pitch_rate_max
+            + cfg.carriage_rate_weight * carriage / cfg.carriage_rate_scale**2
         )
         terminated = plant.invalid | plant.limit_hit | collided
         reward -= cfg.termination_penalty * terminated.float()
@@ -272,6 +303,7 @@ class HydraulicControlEnv(VecEnv):
                 / moving.sum().clamp_min(1)
                 * 1000,
                 "Tracking/angular_rate_error": angle_rate_error.mean(),
+                "Tracking/carriage_rate_rms": carriage.mean().sqrt(),
                 "Tracking/sigma_mm_s": torch.tensor(sigma * 1000),
                 "Valves/du_mean": du.abs().mean(),
                 "Valves/du_p99": torch.quantile(du.abs().flatten(), 0.99),
@@ -333,6 +365,10 @@ class HydraulicControlEnv(VecEnv):
             ),
             dim=1,
         )
+        if self.cfg.pose_priority:
+            # The slider is a setting, not a measurement: no noise.
+            policy = torch.cat((policy, self.priority[:, None]), dim=1)
+            clean = torch.cat((clean, self.priority[:, None]), dim=1)
         critic = torch.cat((clean, privileged), dim=1)
         return TensorDict({"policy": policy, "critic": critic}, batch_size=[self.num_envs])
 
@@ -388,6 +424,8 @@ class HydraulicControlEnv(VecEnv):
             twist[:, 2].clamp_(-cfg.pitch_rate_max, cfg.pitch_rate_max)
             self.requested[moving] = twist
         self._sample_targets(ids)
+        if cfg.pose_priority:  # drawn last, so configurations without it keep their random streams
+            self.priority[ids] = torch.rand(count, device=self.device)
 
     def _sample_targets(self, ids: torch.Tensor) -> None:
         cfg = self.cfg
@@ -423,6 +461,11 @@ class HydraulicControlEnv(VecEnv):
             expired = (self.hold_timer <= 0).nonzero().flatten()
             if len(expired):
                 self._sample_targets(expired)
+                if cfg.pose_priority:
+                    redraw = expired[
+                        torch.rand(len(expired), device=self.device) < cfg.pose_priority_resample_prob
+                    ]
+                    self.priority[redraw] = torch.rand(len(redraw), device=self.device)
         delta = self.target - self.requested
         linear = delta[:, :2]
         linear = linear * (
