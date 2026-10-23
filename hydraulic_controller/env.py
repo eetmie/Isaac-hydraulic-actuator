@@ -131,7 +131,7 @@ class HydraulicControlEnv(VecEnv):
         self.settings = cfg.settings
         self.decimation = self.settings.decimation
         self.policy_dt = self.settings.policy_dt
-        self.time_scale = 0.05 / self.policy_dt
+        self.time_scale = self.policy_dt / 0.05  # the reward's tracking and penalty terms are per 0.05 s
         self.max_episode_length = round(cfg.episode_length_s / self.policy_dt)
         self.episode_length_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.common_step_counter = 0
