@@ -239,7 +239,52 @@ def evaluate(path, chunks, device, count=24):
     return result
 
 
-def save_candidate(predictor, original, out, step, label, metrics):
+def init_scratch(p, chunks, args):
+    """Re-initialise the network and fit its normalisers to the prepared data, then regress one step.
+
+    The V5 weights and normalisers were fitted to smoothed labels; a scratch model sees only the
+    prepared targets. One-step teacher-forced regression gives the rollout phase a usable start.
+    """
+    device = args.device
+    for module in p.net.modules():
+        if isinstance(module, torch.nn.Linear):
+            module.reset_parameters()
+
+    def tensor(key):
+        return torch.tensor(np.concatenate([c[key] for c in chunks]), device=device)
+
+    q, v, u = tensor("q"), tensor("target_v"), tensor("u")
+    legal, offset = [], 0
+    for c in chunks:
+        legal.extend(range(offset + 61, offset + len(c["q"]) - 1))
+        offset += len(c["q"])
+    legal = torch.tensor(legal, device=device)
+    taps_v, taps_u = torch.arange(41, device=device), torch.arange(61, device=device)
+
+    def batch(ids):
+        x = torch.cat((q[ids], v[ids[:, None] - taps_v].flatten(1), u[ids[:, None] - taps_u][:, ::3].flatten(1)), 1)
+        return x, v[ids + 1] - v[ids]
+
+    sample = legal[torch.randperm(len(legal), device=device)[:200_000]]
+    x, y = batch(sample)
+    src = p.src
+    src._x_mean, src._x_std = x.mean(0), x.std(0).clamp_min(1e-4)
+    src._y_mean, src._y_std = y.mean(0), y.std(0).clamp_min(1e-5)
+    opt = torch.optim.AdamW(p.net.parameters(), lr=args.pretrain_lr, weight_decay=1e-5)
+    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.pretrain_steps, eta_min=args.pretrain_lr * 0.01)
+    p.net.train()
+    for step in range(1, args.pretrain_steps + 1):
+        x, y = batch(legal[torch.randint(len(legal), (2048,), device=device)])
+        loss = torch.nn.functional.mse_loss(p.net((x - src._x_mean) / src._x_std), (y - src._y_mean) / src._y_std)
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+        schedule.step()
+        if step % 1000 == 0:
+            print(json.dumps({"label": "pretrain", "step": step, "loss": loss.item()}), flush=True)
+
+
+def save_candidate(predictor, original, out, step, label, metrics, target_velocity="smooth21"):
     out.mkdir(parents=True, exist_ok=True)
     src = predictor.src
     meta = json.loads((original / "model_meta.json").read_text())
@@ -247,7 +292,7 @@ def save_candidate(predictor, original, out, step, label, metrics):
     meta["training"] = {
         "parent": str(original),
         "input_velocity": label,
-        "target_velocity": "smooth21",
+        "target_velocity": target_velocity,
         "sensor_contract": SENSOR_CONTRACT,
         "step": step,
         "development": metrics,
@@ -280,16 +325,19 @@ def train(args):
         "candidates": {},
     }
     selection["budget"] = {k: str(v) if isinstance(v, Path) else v for k, v in selection["budget"].items()}
-    for label in ("smooth", "gyro"):
+    for label in ("gyro",) if args.gyro_only else ("smooth", "gyro"):
         torch.manual_seed(args.seed)
         p = Predictor(args.model, args.device)
         p.net.train().requires_grad_(True)
+        if args.scratch:
+            init_scratch(p, chunks, args)
 
         def tensor(key):
             return torch.tensor(np.concatenate([c[key] for c in chunks]), device=args.device)
 
         q, v, target_q, target_v, u = [tensor(k) for k in ("q", "v", "target_q", "target_v", "u")]
         input_v = target_v if label == "smooth" else v
+        target = "gyro" if args.gyro_only else "smooth21"
         legal, offset = [], 0
         for c in chunks:
             legal.extend(range(offset + 61, offset + len(c["q"]) - args.horizon - 1))
@@ -328,7 +376,7 @@ def train(args):
                 raise FloatingPointError(f"{label} training diverged at {step}")
             if step % args.eval_every == 0 or step == args.steps:
                 # Save a disposable *candidate artifact*, never overwrite the baseline.
-                save_candidate(p, args.model, out / "latest", step, label, {})
+                save_candidate(p, args.model, out / "latest", step, label, {}, target)
                 metrics = evaluate(out / "latest", dev, args.device, args.cases)
                 score = metrics.get("path10_deg", 1e12) + metrics.get("rest10_deg", 1e12)
                 row = {
@@ -340,7 +388,7 @@ def train(args):
                 history.append(row)
                 if metrics["finite"] and score < best_score:
                     best_score = score
-                    save_candidate(p, args.model, out, step, label, metrics)
+                    save_candidate(p, args.model, out, step, label, metrics, target)
                 (out / "history.json").write_text(json.dumps(history, indent=2) + "\n")
                 print(json.dumps({"label": label, **row}), flush=True)
                 p.net.train()
@@ -348,7 +396,7 @@ def train(args):
                 print(json.dumps({"label": label, "step": step, "loss": loss.item()}), flush=True)
         selection["candidates"][label] = json.loads((out / "model_meta.json").read_text())["training"]
     gyro = selection["candidates"]["gyro"]["development"]
-    control = selection["candidates"]["smooth"]["development"]
+    control = selection["candidates"].get("smooth", {"development": baseline})["development"]
     # Floors avoid rejecting numerical roundoff around the baseline's exact neutral bound.
     accepted = gyro["finite"] and gyro["path10_deg"] < min(baseline["path10_deg"], control["path10_deg"])
     for metric, floor in (("rest10_deg", 0.1), ("stop_rate_rad_s", 0.005)):
@@ -378,6 +426,18 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--eval_every", type=int, default=100)
     parser.add_argument("--cases", type=int, default=24)
+    parser.add_argument(
+        "--scratch",
+        action="store_true",
+        help="Start from random weights and normalisers fitted to the prepared data, not from --model",
+    )
+    parser.add_argument("--pretrain_steps", type=int, default=8000, help="One-step regression updates for --scratch")
+    parser.add_argument("--pretrain_lr", type=float, default=1e-3)
+    parser.add_argument(
+        "--gyro_only",
+        action="store_true",
+        help="Train only the gyro candidate; the prepared target_v (e.g. raw gyro) is its label",
+    )
     args = parser.parse_args()
     torch.set_num_threads(2)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -395,6 +455,7 @@ def main():
             "gyro": args.out / "gyro_model",
             "smooth": args.out / "smooth_model",
         }
+        paths = {name: path for name, path in paths.items() if name == "baseline" or path.exists()}
         results = {
             name: evaluate(path, load_chunks(args.out, split), args.device, args.cases)
             for name, path in paths.items()

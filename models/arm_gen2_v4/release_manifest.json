@@ -1,0 +1,6 @@
+{
+  "version": "gen2-v4",
+  "source": "runs/gen2_v4_base/gyro_model (step 1750)",
+  "reason": "Scratch-trained on 9 gen2 robot recordings (2026-10-21/22, ~86 min, raw gyro targets). Held-out test (143446 stroke): 10 s path 3.69 deg, 30 s path 5.55 deg (V5-steady 3.58 / 6.07).",
+  "neutral_bound": "none; drifts ~3 deg per 10 s with closed valves (V5-steady clips to 0)"
+}

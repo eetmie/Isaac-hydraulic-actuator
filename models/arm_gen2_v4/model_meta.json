@@ -1,0 +1,115 @@
+{
+  "dt": 0.01,
+  "target_mode": "delta_velocity",
+  "hist_q": 1,
+  "hist_qdot": 41,
+  "hist_u": 21,
+  "qdot_stride": 1,
+  "u_stride": 3,
+  "hist_q_sec": 0.0,
+  "hist_qdot_sec": 0.4,
+  "hist_u_sec": 0.6000000000000001,
+  "include_q": true,
+  "time_col": "timestamp",
+  "u_cols": [
+    "combined_cmd_lift",
+    "combined_cmd_tilt",
+    "combined_cmd_scoop"
+  ],
+  "q_cols": [
+    "joint_pos_boom",
+    "joint_pos_arm",
+    "joint_pos_bucket",
+    "carriage_pitch"
+  ],
+  "qdot_cols": [
+    "joint_vel_boom",
+    "joint_vel_arm",
+    "joint_vel_bucket",
+    "carriage_pitch_rate"
+  ],
+  "units": {
+    "timestamp_raw": "s",
+    "joint_position": "rad",
+    "joint_velocity": "rad/s",
+    "command": "normalized_-1_to_1"
+  },
+  "model": {
+    "hidden": [
+      644,
+      521,
+      393,
+      14
+    ],
+    "activation": "relu",
+    "in_dim": 231,
+    "out_dim": 4,
+    "target": "delta_velocity"
+  },
+  "version": "gyro-transfer-1",
+  "learned_carriage": true,
+  "simulation_joint_names": [
+    "revolute_lift",
+    "revolute_tilt",
+    "revolute_tool",
+    "revolute_carriage_pitch"
+  ],
+  "training": {
+    "parent": "models\\arm_v5_steady",
+    "input_velocity": "gyro",
+    "target_velocity": "gyro",
+    "sensor_contract": {
+      "version": 1,
+      "roles": [
+        "base",
+        "boom",
+        "arm",
+        "bucket"
+      ],
+      "velocity_source": "aligned_y_child_minus_parent",
+      "software_filter": "none",
+      "sampling": "latest_complete_packet_not_after_tick",
+      "bias": "firmware_startup_correction_only",
+      "carriage_pitch_zero_rad": -0.004821687005460262,
+      "mount_pitch_rad": [
+        0.0,
+        0.241728109123881,
+        0.017453221928437734,
+        0.0
+      ]
+    },
+    "step": 1750,
+    "development": {
+      "0.01": {
+        "cases": 24,
+        "path_deg": 0.027713220566511154,
+        "endpoint_deg": 0.027713220566511154,
+        "velocity_rmse_rad_s": 0.026464231312274933
+      },
+      "1": {
+        "cases": 24,
+        "path_deg": 0.9010101556777954,
+        "endpoint_deg": 1.6564698219299316,
+        "velocity_rmse_rad_s": 0.10621357709169388
+      },
+      "10": {
+        "cases": 24,
+        "path_deg": 3.5306663513183594,
+        "endpoint_deg": 6.3633341789245605,
+        "velocity_rmse_rad_s": 0.09114818274974823
+      },
+      "30": {
+        "cases": 19,
+        "path_deg": 6.787729263305664,
+        "endpoint_deg": 9.916354179382324,
+        "velocity_rmse_rad_s": 0.09556229412555695
+      },
+      "finite": true,
+      "rest10_deg": 2.9943525791168213,
+      "stop_rate_rad_s": 0.007651456631720066,
+      "path10_deg": 3.5306663513183594
+    },
+    "test_seen": false,
+    "note": "Fine-tuned weights; parent's compiled bound is not guaranteed"
+  }
+}
