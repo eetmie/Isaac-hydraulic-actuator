@@ -19,10 +19,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import MISSING
+from typing import TYPE_CHECKING
 
 import torch
-from isaaclab.scene import InteractiveScene
 from isaaclab.utils import configclass
+
+if TYPE_CHECKING:
+    # Imported for annotations only: isaaclab.scene pulls in pxr, which must not load before Kit starts.
+    from isaaclab.scene import InteractiveScene
 
 _REGEX_CHARS = re.compile(r"[.^$*+?{}\[\]\\|()]")
 

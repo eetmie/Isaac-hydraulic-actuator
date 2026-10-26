@@ -9,13 +9,35 @@ Idea from Egli, P. and Hutter, M. (2020) 'Towards RL-Based Hydraulic Excavator A
 
 ## Run the demo
 
-Tested with **Isaac Lab 3.0 / Isaac Sim 6.0.1**. Clone this repository into
-`IsaacLab/scripts/Isaac-hydraulic-actuator`, activate your Isaac environment, and
-run this command **from the Isaac Lab root**:
+Tested with **Isaac Lab 3.0.0 / Isaac Sim 6.2** on Linux x86_64 and aarch64
+(DGX Spark). Isaac Lab 3.0 is installed and run with [uv](https://docs.astral.sh/uv/);
+there is no `isaaclab.sh` and no separate Isaac Sim install. Clone this repository
+into `IsaacLab/scripts/Isaac-hydraulic-actuator` and run every command below **from
+the Isaac Lab root**:
 
-```bat
-isaaclab.bat -p scripts/isaac-hydraulic-actuator/sim.py --model scripts\Isaac-hydraulic-actuator\models\arm_v5 --slew-model scripts\Isaac-hydraulic-actuator\models\slew
+```bash
+git clone https://github.com/isaac-sim/IsaacLab.git --branch v3.0.0
+cd IsaacLab
+git clone https://github.com/eetmie/Isaac-hydraulic-actuator.git scripts/Isaac-hydraulic-actuator
+
+uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/sim.py \
+    --model scripts/Isaac-hydraulic-actuator/models/arm_v5 \
+    --slew-model scripts/Isaac-hydraulic-actuator/models/slew
 ```
+
+The first `uv run --extra isaacsim` builds the environment and downloads Isaac Sim
+6.2 from PyPI (about 20 GB with PyTorch); the first launch also compiles shaders and
+takes a few minutes. Platform notes:
+
+- **EULA:** the first Isaac Sim launch asks you to accept the NVIDIA Omniverse EULA.
+  Setting `OMNI_KIT_ACCEPT_EULA=YES` accepts it non-interactively, so only set it
+  once you have read and accepted the license.
+- **aarch64 (DGX Spark, Jetson):** direct Python commands that import Isaac Sim need
+  `export LD_PRELOAD=/lib/aarch64-linux-gnu/libgomp.so.1`.
+- **Headless:** pass `--viz none`. Without `--viz`, the demos open the Kit window,
+  which the gamepad needs.
+- **Windows:** the same `uv run` commands work in PowerShell; use `` ` `` instead of
+  `\` to continue a line.
 
 The Kit window opens in NN mode. Connect an Xbox-compatible controller:
 
@@ -36,8 +58,8 @@ The frozen V5 steady actuator network is the plant, so training runs as batched
 Torch on the GPU with no simulator (~75k steps/s with 4096 environments; a
 1,500-iteration run takes about half an hour). From the Isaac Lab root:
 
-```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\train_controller.py --run_name my_run
+```bash
+uv run python scripts/Isaac-hydraulic-actuator/train_controller.py --run_name my_run
 ```
 
 Design choices, and the measurement behind each:
@@ -65,16 +87,16 @@ Design choices, and the measurement behind each:
 
 The prototype controller ships in `models/controller_proto` and is the default,
 so these commands work on a fresh clone without training. They need RSL-RL,
-which `isaaclab.bat --install` includes. From the Isaac Lab root:
+which the Isaac Lab environment already includes. From the Isaac Lab root:
 
-```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode draw
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode circle --speed-mm-s 40
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode gamepad --speed-mm-s 60
+```bash
+uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.py --mode draw
+uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.py --mode circle --speed-mm-s 40
+uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.py --mode gamepad --speed-mm-s 60
 ```
 
 Playback cruises at 30 mm/s unless `--speed-mm-s` is given. Pass
-`--checkpoint path\to\model_N.pt` to run your own training run instead; the
+`--checkpoint path/to/model_N.pt` to run your own training run instead; the
 console reports the benchmark's recommended speed when a benchmark matches the
 checkpoint.
 
@@ -82,8 +104,8 @@ The benchmark runs held commands with reversals and stops, plus quintic-timed
 circles and lines, under nominal and perturbed valves. Results go to CSV/JSON
 and a figure under `runs/`:
 
-```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\run_controller.py --mode benchmark --viz none
+```bash
+uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.py --mode benchmark --viz none
 ```
 
 Draw mode holds the starting bucket angle, so only part of the drawing box is
@@ -111,10 +133,10 @@ boom/arm/bucket PIDs of [kaivuriprokkis](https://github.com/eetmie/kaivuriprokki
 (`modules/pid.py`, ported 1:1 to batched Torch). All three tools read the gains
 from a sibling `kaivuriprokkis` checkout (`--robot_repo`) and need no simulator:
 
-```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\measure_speeds.py   # what the plant can reach at all
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\replay_pid.py       # the robot's current gains
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\tune_pid.py         # CMA-ES, writes a pid: YAML block
+```bash
+uv run python scripts/Isaac-hydraulic-actuator/measure_speeds.py   # what the plant can reach at all
+uv run python scripts/Isaac-hydraulic-actuator/replay_pid.py       # the robot's current gains
+uv run python scripts/Isaac-hydraulic-actuator/tune_pid.py         # CMA-ES, writes a pid: YAML block
 ```
 
 - `measure_speeds.py` maps the achievable tip speed per direction across the
@@ -129,8 +151,8 @@ from a sibling `kaivuriprokkis` checkout (`--robot_repo`) and need no simulator:
 
 ## Compare PID, MPC and the learned controller
 
-```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\compare_controllers.py --pid_gains runs\pid_tune\<run>\pid_gains.yaml
+```bash
+uv run python scripts/Isaac-hydraulic-actuator/compare_controllers.py --pid_gains scripts/Isaac-hydraulic-actuator/runs/pid_tune/<run>/pid_gains.yaml
 ```
 
 Runs the robot's PID, the tuned PID, the PPO valve policy and a sampling MPC
@@ -150,10 +172,10 @@ reference cases the robot replays at load. First generate a robot profile whose
 arm geometry is the controller USD's (once per calibration), then export:
 
 ```bash
-isaaclab.sh -p scripts/Isaac-hydraulic-actuator/export_robot_bundle.py profile \
+uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/export_robot_bundle.py profile \
     --source_profile ../kaivuriprokkis/configuration_files/profiles/jetson --robot jetson_bucket \
     --out ../kaivuriprokkis/configuration_files/profiles/jetson_bucket
-isaaclab.sh -p scripts/Isaac-hydraulic-actuator/export_robot_bundle.py export \
+uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/export_robot_bundle.py export \
     --checkpoint models/controller_v6/model_1798.pt --robot jetson_bucket \
     --out ../kaivuriprokkis/learned_control/bundles/v6_jetson_bucket
 ```
@@ -264,10 +286,10 @@ complete; physical robot acceptance is still pending.
 The generic trainer is a baseline training tool, not the
 complete V4/V5 fine-tuning recipe. To inspect its options or check the release:
 
-```powershell
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\training\train.py --help
-.\isaaclab.bat -p scripts\Isaac-hydraulic-actuator\training\eval.py --help
-.\isaaclab.bat -p -m pytest scripts\Isaac-hydraulic-actuator\training -q
+```bash
+uv run --with pandas python scripts/Isaac-hydraulic-actuator/training/train.py --help
+uv run --with pandas python scripts/Isaac-hydraulic-actuator/training/eval.py --help
+uv run --with pytest --extra isaacsim python -m pytest scripts/Isaac-hydraulic-actuator/training -q
 ```
 
 Development formatting and checks use `pre-commit run --all-files` from this

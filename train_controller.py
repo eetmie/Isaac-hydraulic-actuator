@@ -3,7 +3,7 @@
 No simulator is launched: the frozen actuator MLP is the plant, and thousands of environments run as batched
 Torch on the GPU. From the Isaac Lab root::
 
-    isaaclab.bat -p scripts/Isaac-hydraulic-actuator/train_controller.py --run_name baseline
+    uv run python scripts/Isaac-hydraulic-actuator/train_controller.py --run_name baseline
 
 Checkpoints land in ``logs/rsl_rl/hydraulic_controller/<time>_<run_name>/`` next to ``controller_contract.json``,
 which ``run_controller.py`` uses to rebuild the exact plant, kinematics and observation layout.

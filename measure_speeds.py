@@ -2,8 +2,8 @@
 
 No simulator is launched. From the Isaac Lab root::
 
-    isaaclab.sh -p scripts/Isaac-hydraulic-actuator/measure_speeds.py
-    isaaclab.sh -p scripts/Isaac-hydraulic-actuator/measure_speeds.py --plant machine_20pct_slower
+    uv run python scripts/Isaac-hydraulic-actuator/measure_speeds.py
+    uv run python scripts/Isaac-hydraulic-actuator/measure_speeds.py --plant machine_20pct_slower
 
 Writes speed_map.json/.pt, speed_map.png and valve_curves.png to ``runs/speed_limits/<time>_<plant>/``.
 """

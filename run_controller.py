@@ -2,10 +2,10 @@
 
 Examples from the Isaac Lab root::
 
-    isaaclab.bat -p scripts/Isaac-hydraulic-actuator/run_controller.py --mode draw
-    isaaclab.bat -p scripts/Isaac-hydraulic-actuator/run_controller.py --mode circle
-    isaaclab.bat -p scripts/Isaac-hydraulic-actuator/run_controller.py --mode gamepad
-    isaaclab.bat -p scripts/Isaac-hydraulic-actuator/run_controller.py --mode benchmark --viz none
+    uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.py --mode draw
+    uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.py --mode circle
+    uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.py --mode gamepad
+    uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.py --mode benchmark --viz none
 
 The policy runs at its trained rate (20 Hz by default) and the frozen hydraulic
 recurrence remains the authoritative state transition at 100 Hz, matching training.
@@ -109,41 +109,51 @@ def drain_ui(incoming, outgoing, kin, plant, box, session, validate_stroke, sket
     return closing
 
 
-def run_interactive(args_cli, checkpoint: Path, simulation_app) -> None:
+def run_interactive(args_cli, checkpoint: Path) -> None:
+    """Start Isaac Sim for the scene's simulation config, then play the controller in it."""
+    import isaaclab.sim as sim_utils
+    from isaaclab.app import launch_simulation
+    from isaaclab_physx.physics import PhysxCfg
+
+    from hydraulic_controller.policy import ControllerPolicy
+
+    policy = ControllerPolicy(checkpoint, args_cli.device)
+    sim_cfg = sim_utils.SimulationCfg(
+        dt=policy.settings.dt,
+        render_interval=1,
+        device=args_cli.device,
+        physics=PhysxCfg(enable_external_forces_every_iteration=True),
+    )
+    # Starts Kit (see require_kit in entrypoint) and closes it when the block exits.
+    with launch_simulation(sim_cfg, args_cli):
+        play(args_cli, checkpoint, policy, sim_cfg)
+
+
+def play(args_cli, checkpoint: Path, policy, sim_cfg) -> None:
     """Create one Isaac scene and run the custom deterministic playback loop."""
-    # Isaac/Kit imports must happen after AppLauncher starts the application.
+    # Kit-only modules (carb, via the gamepad) import only once launch_simulation has started the app.
     import isaaclab.sim as sim_utils
     import torch
     from isaaclab.markers import VisualizationMarkers
     from isaaclab.markers.config import SPHERE_MARKER_CFG
     from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-    from isaaclab_physx.physics import PhysxCfg
 
     from hydraulic_controller.core import HOME, HydraulicPlant
     from hydraulic_controller.draw_ui import open_drawing_window
     from hydraulic_controller.gamepad import GamepadVelocity
     from hydraulic_controller.kinematics import ExcavatorKinematics
-    from hydraulic_controller.policy import ControllerPolicy
     from hydraulic_controller.scene import HydraulicSceneBridge, ViewportSketch, robot_config, setup_scene
     from hydraulic_controller.trajectory import DrawingSession, validate_stroke
 
     torch.set_num_threads(args_cli.torch_threads)
     output_dir = Path(args_cli.benchmark_out).resolve()
     speed = selected_speed(checkpoint, args_cli.speed_mm_s, output_dir)
-    policy = ControllerPolicy(checkpoint, args_cli.device)
     kin = ExcavatorKinematics(policy.asset_path, args_cli.device)
     settings = policy.settings
     print(f"[INFO] Checkpoint: {checkpoint}")
     print(f"[INFO] Requested cruise: {1000 * speed:g} mm/s")
 
-    sim = sim_utils.SimulationContext(
-        sim_utils.SimulationCfg(
-            dt=settings.dt,
-            render_interval=1,
-            device=args_cli.device,
-            physics=PhysxCfg(enable_external_forces_every_iteration=True),
-        )
-    )
+    sim = sim_utils.SimulationContext(sim_cfg)
     sim.set_camera_view([2.2, 2.2, 1.5], [0.3, 0.0, 0.25])
     scene = InteractiveScene(InteractiveSceneCfg(num_envs=1, env_spacing=2.5, replicate_physics=True))
     robot = setup_scene(scene, sim.stage, robot_config(str(policy.asset_path)))
@@ -206,7 +216,7 @@ def run_interactive(args_cli, checkpoint: Path, simulation_app) -> None:
     drawing_errors = []
     try:
         while (
-            simulation_app.is_running()
+            sim.is_running()
             and not closing
             and (not args_cli.max_steps or step < args_cli.max_steps)
         ):
@@ -279,7 +289,7 @@ def run_interactive(args_cli, checkpoint: Path, simulation_app) -> None:
                     "Controller stopped after invalid state, a joint limit, or a geometry collision"
                 )
     finally:
-        # Report before closing the app: SimulationApp.close() may end the process.
+        # Report before leaving launch_simulation: closing the app may end the process.
         print(f"[INFO] Completed {step} hydraulic steps; PhysX post-step syncs={bridge.post_steps}")
         if drawing_errors:
             print(
@@ -296,12 +306,11 @@ def run_interactive(args_cli, checkpoint: Path, simulation_app) -> None:
                 ui_process.terminate()
                 ui_process.join(timeout=1)
         bridge.close()
-        simulation_app.close()
 
 
 def entrypoint() -> int:
     """Parse once in the parent process, then launch benchmark or Isaac playback."""
-    from isaaclab.app import AppLauncher
+    from isaaclab.app import add_launcher_args
 
     parser = argparse.ArgumentParser(description="Hydraulic end-effector velocity controller")
     parser.add_argument(
@@ -324,7 +333,7 @@ def entrypoint() -> int:
         "--max_steps", type=int, default=0, help="Stop after this many 100 Hz steps; 0 is continuous"
     )
     parser.add_argument("--torch_threads", type=int, default=2)
-    AppLauncher.add_app_launcher_args(parser)
+    add_launcher_args(parser)
     args_cli = parser.parse_args()
     if args_cli.max_steps < 0:
         parser.error("--max_steps must be non-negative")
@@ -351,13 +360,13 @@ def entrypoint() -> int:
         print(f"[INFO] Benchmark complete: {output}")
         return 0
 
-    # Default to the Kit viewer, except when headless (a Kit visualizer cannot be configured without a display).
-    # Isaac Lab releases dropped --headless and visualizer_explicit; an explicit --visualizer is then the signal.
-    explicit = getattr(args_cli, "visualizer_explicit", False) or args_cli.visualizer is not None
-    if not explicit and not getattr(args_cli, "headless", False):
+    # Default to the Kit viewer; an explicit --viz (including --viz none) is the user's choice.
+    if args_cli.visualizer is None:
         args_cli.visualizer = ["kit"]
-    app_launcher = AppLauncher(args_cli)
-    run_interactive(args_cli, checkpoint, app_launcher.app)
+    # The gamepad reader and scene helpers use Kit-only APIs (carb, omni.kit) that the config tree
+    # cannot express, so ask launch_simulation for Kit explicitly.
+    args_cli.require_kit = True
+    run_interactive(args_cli, checkpoint)
     return 0
 
 

@@ -1,7 +1,7 @@
 """
 Excavator sim -- hydraulic actuator net + gamepad teleop.
 
-Targets Isaac Lab 3.0 / Isaac Sim 6.0.1.
+Targets Isaac Lab 3.0.0 / Isaac Sim 6.2.
 
 USD joint names map to the model's joint order as lift=boom, tilt=arm, tool=bucket.
 
@@ -29,12 +29,12 @@ learned state to make authoritative.
 
 Isaac Lab 3.0 runs headless unless a visualizer is requested. Teleop needs the
 Omniverse app window for gamepad events, so this script defaults to ``--viz kit``.
-Pass ``--viz none`` (or the deprecated ``--headless``) to run without a window; the
-gamepad then reports no input and the sim free-runs on zero commands.
+Pass ``--viz none`` to run without a window; the gamepad then reports no input and
+the sim free-runs on zero commands.
 
 .. code-block:: bash
 
-    isaaclab.bat -p scripts/Isaac-hydraulic-actuator/sim.py --tool bucket
+    uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/sim.py --tool bucket
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ import time
 import weakref
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from isaaclab.app import AppLauncher
+from isaaclab.app import add_launcher_args, launch_simulation
 
 from endstop_guard import EndStopGuard
 from sim_common import (  # noqa: E402
@@ -204,7 +204,7 @@ parser.add_argument(
     default=NN_ARM_VEL_WARN_DEFAULT,
     help="Warn, but do not clamp, above this NN-predicted arm speed [rad/s]",
 )
-AppLauncher.add_app_launcher_args(parser)
+add_launcher_args(parser)
 args_cli = parser.parse_args()
 try:
     resolve_demo_defaults(args_cli)
@@ -238,32 +238,33 @@ args_cli.num_envs = 1  # teleop always single env
 
 # Isaac Lab 3.0 resolves the visualizer from --viz (or SimulationCfg.visualizer_cfgs) and
 # runs headless when neither asks for Kit. Gamepad teleop needs the Kit app window, so
-# request it unless the user made an explicit choice. --headless still wins downstream.
-if not getattr(args_cli, "visualizer_explicit", False):
+# request it unless the user made an explicit choice. Isaac Lab 3.0 GA dropped
+# ``visualizer_explicit``; an explicit ``--viz`` (including ``--viz none``) is the signal.
+if args_cli.visualizer is None:
     args_cli.visualizer = ["kit"]
+# The gamepad reader and the stage edit below use Kit-only APIs (carb, pxr), which the
+# config tree cannot express, so ask launch_simulation for Kit explicitly.
+args_cli.require_kit = True
 
-app_launcher = AppLauncher(args_cli)
-simulation_app = app_launcher.app
-
-# -- post-launch imports ----------------------------------------------------
+# -- imports that do not need a running app ---------------------------------
+# Kit-only modules (carb, pxr) are imported inside the functions that use them; they are
+# only importable once launch_simulation has started the app. So is isaaclab.scene's
+# InteractiveScene (it pulls in pxr, which must not load before Kit): only its config class
+# is imported here, and the scene is built with instantiate() inside the launch.
 
 import numpy as np
 import torch
-from pxr import UsdPhysics
 
 torch.set_num_threads(args_cli.torch_threads)
 
-import carb
-import carb.input
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.app.settings_manager import get_settings_manager
 from isaaclab.assets import Articulation, ArticulationCfg, AssetBaseCfg
-from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sim.schemas import RigidBodyBaseCfg
-from isaaclab.utils import configclass
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.utils import configclass, instantiate
 from isaaclab_physx.physics import PhysxCfg
-from isaaclab_physx.sim.schemas import PhysxArticulationRootPropertiesCfg
+from isaaclab_physx.sim.schemas import PhysxArticulationCfg, PhysxRigidBodyCfg
 
 from actuators import (  # noqa: E402
     DirectIntegrationActuator,
@@ -345,9 +346,8 @@ class ExcavatorSceneCfg(InteractiveSceneCfg):
             usd_path=ROBOT_USD,
             copy_from_source=True,
             # The learned velocity already includes the real machine's gravity response.
-            # RigidBodyBaseCfg is the backend-portable half of the 2.x RigidBodyPropertiesCfg.
-            rigid_props=RigidBodyBaseCfg(disable_gravity=DISABLE_ROBOT_GRAVITY),
-            articulation_props=PhysxArticulationRootPropertiesCfg(
+            rigid_props=PhysxRigidBodyCfg(disable_gravity=DISABLE_ROBOT_GRAVITY),
+            articulation_props=PhysxArticulationCfg(
                 solver_velocity_iteration_count=args_cli.solver_velocity_iterations,
             ),
         ),
@@ -373,6 +373,8 @@ def fix_carriage_to_world(stage, num_envs: int) -> None:
     articulation root (``/excavator``) is a plain Xform without ``RigidBodyAPI``,
     which is the one case Isaac Lab's fixed-root helper explicitly refuses.
     """
+    from pxr import UsdPhysics
+
     for env_idx in range(num_envs):
         robot_prim = f"/World/envs/env_{env_idx}/Robot"
         joint_prim = f"{robot_prim}/Joints/world_fixed"
@@ -511,7 +513,7 @@ class XboxController:
     """
 
     def __init__(self):
-        get_settings_manager().set_bool("/persistent/app/omniverse/gamepadCameraControl", False)
+        get_settings_manager().set("/persistent/app/omniverse/gamepadCameraControl", False)
         # index: 0=lift_up 1=lift_dn 2=carriage_l 3=carriage_r 4=tilt_up 5=tilt_dn 6=tool_r 7=tool_l
         self._axes = np.zeros(8, dtype=np.float32)
         self._a_pressed = False
@@ -535,6 +537,8 @@ class XboxController:
             print("[Gamepad] No app window (headless run); teleop disabled, commands stay at zero")
             return
 
+        import carb.input
+
         self._input = carb.input.acquire_input_interface()
         self._gamepad = self._appwindow.get_gamepad(0)
         self._sub = self._input.subscribe_to_gamepad_events(
@@ -549,6 +553,8 @@ class XboxController:
             self._input.unsubscribe_to_gamepad_events(self._gamepad, self._sub)
 
     def _on_event(self, ev):
+        import carb.input
+
         GI = carb.input.GamepadInput
         v = ev.value
         m = {
@@ -642,11 +648,17 @@ def main():
         # Isaac Lab 3.0: the backend config moved from `physx=` to `physics=`.
         physics=PhysxCfg(enable_external_forces_every_iteration=True),
     )
+    # Starts Kit (see require_kit above) and closes it when the block exits.
+    with launch_simulation(sim_cfg, args_cli):
+        run(sim_cfg)
+
+
+def run(sim_cfg):
     sim = sim_utils.SimulationContext(sim_cfg)
     sim.set_camera_view([3.0, 3.0, 2.0], [0.0, 0.0, 0.5])
 
     scene_cfg = ExcavatorSceneCfg(num_envs=args_cli.num_envs, env_spacing=4.0)
-    scene = InteractiveScene(scene_cfg)
+    scene = instantiate(scene_cfg)
 
     fix_carriage_to_world(sim.stage, scene.num_envs)
 
@@ -863,7 +875,7 @@ def main():
         wall_s=time.perf_counter(),
         sim_s=sim.get_physics_step_count() * physics_dt,
     )
-    while simulation_app.is_running():
+    while sim.is_running():
         if args_cli.max_steps and step >= args_cli.max_steps:
             break
         if replay is not None and args_cli.replay_start + step >= len(replay["q"]) - 1:
@@ -1105,7 +1117,6 @@ def main():
             position_limits=arm_actuator._joint_pos_limits[0].cpu().numpy(),
         )
         print(f"[INFO] Saved {len(rows)} replay steps to {output}")
-    simulation_app.close()
 
 
 if __name__ == "__main__":

@@ -3,8 +3,8 @@
 Starts from the robot's ``control_config.yaml`` gains and writes the tuned ones as a YAML ``pid:`` block that
 drops into the same file. From the Isaac Lab root::
 
-    isaaclab.sh -p scripts/Isaac-hydraulic-actuator/tune_pid.py --robot_repo ../kaivuriprokkis
-    isaaclab.sh -p scripts/Isaac-hydraulic-actuator/tune_pid.py --generations 10 --popsize 16  # quick look
+    uv run python scripts/Isaac-hydraulic-actuator/tune_pid.py --robot_repo ../kaivuriprokkis
+    uv run python scripts/Isaac-hydraulic-actuator/tune_pid.py --generations 10 --popsize 16  # quick look
 
 Writes pid_gains.yaml, result.json, history.csv, convergence.png and before/after replays (the replay_pid.py
 report) to ``runs/pid_tune/<time>_<run_name>/``.

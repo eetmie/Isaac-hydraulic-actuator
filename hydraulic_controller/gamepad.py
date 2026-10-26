@@ -21,7 +21,7 @@ class GamepadVelocity:
     """Xbox-style X/Z/pitch velocity source with a rising-edge reset button."""
 
     def __init__(self, speed: float, pitch_rate: float):
-        get_settings_manager().set_bool("/persistent/app/omniverse/gamepadCameraControl", False)
+        get_settings_manager().set("/persistent/app/omniverse/gamepadCameraControl", False)
         self.speed, self.pitch_rate = speed, pitch_rate
         self.axes = np.zeros(6, dtype=np.float32)
         self.reset_pressed = self.previous_reset = False

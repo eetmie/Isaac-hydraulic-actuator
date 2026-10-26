@@ -3,8 +3,8 @@
 Gains come from the robot's ``control_config.yaml``; ``--gains`` overrides single joints for quick what-ifs.
 From the Isaac Lab root::
 
-    isaaclab.sh -p scripts/Isaac-hydraulic-actuator/replay_pid.py --robot_repo ../kaivuriprokkis
-    isaaclab.sh -p scripts/Isaac-hydraulic-actuator/replay_pid.py --robot_repo ../kaivuriprokkis --gains arm=6,0.5,0
+    uv run python scripts/Isaac-hydraulic-actuator/replay_pid.py --robot_repo ../kaivuriprokkis
+    uv run python scripts/Isaac-hydraulic-actuator/replay_pid.py --robot_repo ../kaivuriprokkis --gains arm=6,0.5,0
 
 Writes metrics.csv, summary.json, traces.pt and replay.png to ``runs/pid_replay/<time>_<run_name>/``.
 """

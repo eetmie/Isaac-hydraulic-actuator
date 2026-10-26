@@ -180,21 +180,23 @@ is three cycles with no faults and externally measured maximum tip drift within
 
 ## Reproduce locally
 
-Use the Isaac Lab Python environment, from this project directory:
+Use the Isaac Lab uv environment, from this project directory (`--project ../..` is
+the Isaac Lab root when the project sits in `IsaacLab/scripts/`; give an absolute path
+if you symlink it):
 
-```powershell
-..\..\isaaclab.bat -p -m training.gyro_transfer prepare --out runs/gyro_transfer_new
-..\..\isaaclab.bat -p -m training.gyro_transfer train --out runs/gyro_transfer_new
-..\..\isaaclab.bat -p -m training.gyro_transfer prepare --split test --out runs/gyro_transfer_new
-..\..\isaaclab.bat -p -m training.gyro_transfer evaluate --split test --out runs/gyro_transfer_new
+```bash
+uv run --project ../.. python -m training.gyro_transfer prepare --out runs/gyro_transfer_new
+uv run --project ../.. python -m training.gyro_transfer train --out runs/gyro_transfer_new
+uv run --project ../.. python -m training.gyro_transfer prepare --split test --out runs/gyro_transfer_new
+uv run --project ../.. python -m training.gyro_transfer evaluate --split test --out runs/gyro_transfer_new
 ```
 
 The paired experiment needs the local raw-recording archive under
 `local/prototyping`; it is not bundled with source. Controller fine-tuning used:
 
-```powershell
-..\..\isaaclab.bat -p train_controller.py --run_name gyro_transfer --resume logs/rsl_rl/hydraulic_controller/2026-09-15_19-54-48_v8_ent01_nogov_s3/model_1499.pt --max_iterations 300 --num_envs 2048 --save_interval 100 --entropy_coef 0.01 --curriculum_iterations 0 --set gyro_observations=true governor_joint_speed_margin=0.0 joint_speed_scale_range=[0.75,1.3]
-..\..\isaaclab.bat -p run_robot_controller.py export --checkpoint logs/rsl_rl/hydraulic_controller/2026-09-16_20-03-52_gyro_transfer/model_1798.pt --bundle runs/new_bucket_bundle --robot_repo C:/Users/sh23937/Documents/GitHub/kaivuriprokkis
-..\..\isaaclab.bat -p -m hydraulic_controller.rotation_benchmark --checkpoint logs/rsl_rl/hydraulic_controller/2026-09-16_20-03-52_gyro_transfer/model_1798.pt --out runs/new_rotation_report --robot_profile runs/new_bucket_bundle/bucket_control_config.yaml
-..\..\isaaclab.bat -p -m pytest training/test_gyro_transfer.py training/test_hydraulic_controller.py -q
+```bash
+uv run --project ../.. python train_controller.py --run_name gyro_transfer --resume logs/rsl_rl/hydraulic_controller/2026-09-15_19-54-48_v8_ent01_nogov_s3/model_1499.pt --max_iterations 300 --num_envs 2048 --save_interval 100 --entropy_coef 0.01 --curriculum_iterations 0 --set gyro_observations=true governor_joint_speed_margin=0.0 joint_speed_scale_range=[0.75,1.3]
+uv run --project ../.. python run_robot_controller.py export --checkpoint logs/rsl_rl/hydraulic_controller/2026-09-16_20-03-52_gyro_transfer/model_1798.pt --bundle runs/new_bucket_bundle --robot_repo C:/Users/sh23937/Documents/GitHub/kaivuriprokkis
+uv run --project ../.. python -m hydraulic_controller.rotation_benchmark --checkpoint logs/rsl_rl/hydraulic_controller/2026-09-16_20-03-52_gyro_transfer/model_1798.pt --out runs/new_rotation_report --robot_profile runs/new_bucket_bundle/bucket_control_config.yaml
+uv run --project ../.. --with pytest python -m pytest training/test_gyro_transfer.py training/test_hydraulic_controller.py -q
 ```

@@ -4,11 +4,11 @@ The robot side lives in kaivuriprokkis ``learned_control``; it needs only the bu
 Isaac Lab root::
 
     # Once per calibration: a bucket profile whose geometry comes from the controller USD
-    isaaclab.sh -p scripts/Isaac-hydraulic-actuator/export_robot_bundle.py profile \\
+    uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/export_robot_bundle.py profile \\
         --source_profile ../kaivuriprokkis/configuration_files/profiles/jetson --robot jetson_bucket \\
         --out ../kaivuriprokkis/configuration_files/profiles/jetson_bucket
     # Per controller
-    isaaclab.sh -p scripts/Isaac-hydraulic-actuator/export_robot_bundle.py export \\
+    uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/export_robot_bundle.py export \\
         --checkpoint models/controller_v6/model_1798.pt --robot jetson_bucket \\
         --out ../kaivuriprokkis/learned_control/bundles/v6_jetson_bucket
 """

@@ -8,6 +8,8 @@ from types import SimpleNamespace
 def test_physics_substeps_do_not_change_control_period():
     tree = ast.parse((Path(__file__).resolve().parents[1] / "sim.py").read_text())
     main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+    # main() builds the config and starts Kit; run() holds the loop that derives sim_dt.
+    run = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run")
     assignment = next(
         node
         for node in main.body
@@ -24,7 +26,7 @@ def test_physics_substeps_do_not_change_control_period():
     assert scope["sim_cfg"].dt == 0.002
     assignment = next(
         node
-        for node in main.body
+        for node in run.body
         if isinstance(node, ast.Assign)
         and any(isinstance(t, ast.Name) and t.id == "sim_dt" for t in node.targets)
     )

@@ -5,9 +5,9 @@ than the plant can follow or whose reference leaves the joint limits; per_scenar
 ``speed_ratio`` (required over achievable speed, see ``tasks``) and ``path_valid``. Lines start from HOME and the central working poses, circles from the benchmark's
 eight poses. No simulator is launched. From the Isaac Lab root::
 
-    isaaclab.sh -p scripts/Isaac-hydraulic-actuator/compare_controllers.py \\
+    uv run python scripts/Isaac-hydraulic-actuator/compare_controllers.py \\
         --pid_gains runs/pid_tune/<run>/pid_gains.yaml
-    isaaclab.sh -p scripts/Isaac-hydraulic-actuator/compare_controllers.py --task circles \\
+    uv run python scripts/Isaac-hydraulic-actuator/compare_controllers.py --task circles \\
         --pid_gains runs/pid_tune/<run>/pid_gains.yaml --mlp proto=models/controller_proto/model_1798.pt \\
         v6=models/controller_v6/model_1798.pt
 
