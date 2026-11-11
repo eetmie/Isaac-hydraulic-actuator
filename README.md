@@ -250,6 +250,17 @@ October orientations are retained. Velocity targets remain unsmoothed raw gyro.
 Historical recording labels live in provenance, not separate training pipelines.
 See [the fusion audit](docs/offline_fusion_audit.md).
 
+The corpus is public on Hugging Face as
+[eetmie/excavator-hydraulic-actuator](https://huggingface.co/datasets/eetmie/excavator-hydraulic-actuator).
+Training needs only the manifest and chunks (about 120 MB):
+
+```bash
+uvx --from huggingface_hub hf download eetmie/excavator-hydraulic-actuator --type dataset \
+    --include dataset.json --include "training/*" --local-dir dataset/complete_dataset
+```
+
+To train overnight on another machine, see [overnight training](docs/overnight_training.md).
+
 From the actuator project directory, use the Isaac Lab environment:
 
 ```bash
