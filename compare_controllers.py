@@ -8,8 +8,7 @@ eight poses. No simulator is launched. From the Isaac Lab root::
     uv run python scripts/Isaac-hydraulic-actuator/compare_controllers.py \\
         --pid_gains runs/pid_tune/<run>/pid_gains.yaml
     uv run python scripts/Isaac-hydraulic-actuator/compare_controllers.py --task circles \\
-        --pid_gains runs/pid_tune/<run>/pid_gains.yaml --mlp proto=models/controller_proto/model_1798.pt \\
-        v6=models/controller_v6/model_1798.pt
+        --pid_gains runs/pid_tune/<run>/pid_gains.yaml --mlp controller=models/controller/model_1798.pt
 
 Writes summary.json, per_scenario.csv and comparison.png (plus circles.png) to
 ``runs/compare/<time>_<run_name>/``.
@@ -63,9 +62,9 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--mlp",
         nargs="+",
-        default=[f"mlp={ROOT / 'models/controller_proto/model_1798.pt'}"],
+        default=[f"mlp={ROOT / 'models/controller/model_1798.pt'}"],
         metavar="NAME=CHECKPOINT[@HZ][#PRIORITY]",
-        help="one or more policy checkpoints to run as controllers (default: the prototype, named mlp); "
+        help="one or more policy checkpoints to run as controllers (default: the baseline, named mlp); "
         "@HZ runs one at another policy rate than it was trained at; #PRIORITY sets the pose-priority slider "
         "[0, 1] of a checkpoint trained with one",
     )

@@ -10,9 +10,10 @@ repos:
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
-        exclude: ^models/
+        # Preserve byte-for-byte firmware evidence and vendored source hashes.
+        exclude: ^(models/|drive_logs/|training/fusion/)
       - id: end-of-file-fixer
-        exclude: ^models/
+        exclude: ^(models/|drive_logs/|training/fusion/)
       - id: check-added-large-files
         # Small self-contained USDs and the selected 2.3 MB MLP ship in Git.
         args: [--maxkb=4096]

@@ -28,12 +28,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-# The prototype controller shipped with the repository, so the demo runs on a fresh clone.
-DEFAULT_CHECKPOINT = ROOT / "models/controller_proto/model_1798.pt"
+# The baseline controller shipped with the repository, so the demo runs on a fresh clone.
+DEFAULT_CHECKPOINT = ROOT / "models/controller/model_1798.pt"
 
 
 def resolve_checkpoint(value: str | None) -> Path:
-    """Resolve an explicit checkpoint, else the shipped prototype controller."""
+    """Resolve an explicit checkpoint, else the shipped baseline controller."""
     path = Path(value).expanduser().resolve() if value else DEFAULT_CHECKPOINT
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -215,11 +215,7 @@ def play(args_cli, checkpoint: Path, policy, sim_cfg) -> None:
     closing = False
     drawing_errors = []
     try:
-        while (
-            sim.is_running()
-            and not closing
-            and (not args_cli.max_steps or step < args_cli.max_steps)
-        ):
+        while sim.is_running() and not closing and (not args_cli.max_steps or step < args_cli.max_steps):
             if step % settings.decimation == 0:
                 pose, jacobian = kin.pose_jacobian(plant.q)
                 twist = torch.einsum("nij,nj->ni", jacobian, plant.v)
@@ -314,7 +310,7 @@ def entrypoint() -> int:
 
     parser = argparse.ArgumentParser(description="Hydraulic end-effector velocity controller")
     parser.add_argument(
-        "--checkpoint", help="RSL-RL model_*.pt; default is the shipped prototype in models/controller_proto"
+        "--checkpoint", help="RSL-RL model_*.pt; default is the packaged baseline in models/controller"
     )
     parser.add_argument("--mode", choices=("draw", "circle", "gamepad", "benchmark"), default="draw")
     parser.add_argument(

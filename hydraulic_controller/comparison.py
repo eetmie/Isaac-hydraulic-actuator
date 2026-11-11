@@ -22,9 +22,7 @@ LABELS = {  # display names for the usual controllers; anything else shows as gi
     "pid_robot": "PID (robot gains)",
     "pid_tuned": "PID (sim-tuned)",
     "mpc": "MPC (MPPI)",
-    "proto": "MLP (prototype)",
     "mlp": "MLP",
-    "v6": "MLP (V6)",
 }
 
 METRICS = {  # summary name: (rollout term, scale, how to pool over scenarios)

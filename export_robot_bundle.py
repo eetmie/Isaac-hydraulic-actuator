@@ -9,8 +9,8 @@ Isaac Lab root::
         --out ../kaivuriprokkis/configuration_files/profiles/jetson_bucket
     # Per controller
     uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/export_robot_bundle.py export \\
-        --checkpoint models/controller_v6/model_1798.pt --robot jetson_bucket \\
-        --out ../kaivuriprokkis/learned_control/bundles/v6_jetson_bucket
+        --checkpoint models/controller/model_1798.pt --robot jetson_bucket \\
+        --out ../kaivuriprokkis/learned_control/bundles/controller_bucket
 """
 
 from __future__ import annotations

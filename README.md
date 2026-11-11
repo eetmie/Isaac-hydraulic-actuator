@@ -1,6 +1,6 @@
 # Learned hydraulic actuators for Isaac Lab
 
-A small excavator demo driven by learned hydraulic dynamics: **V5 for boom, arm,
+A small excavator demo driven by learned hydraulic dynamics: **an actuator MLP for boom, arm,
 bucket and carriage pitch**, plus an independent **slew MLP**. Both predict velocity
 increments at 100 Hz; the simulator integrates the resulting velocities into joint
 positions.
@@ -12,8 +12,8 @@ Idea from Egli, P. and Hutter, M. (2020) 'Towards RL-Based Hydraulic Excavator A
 Tested with **Isaac Lab 3.0.0 / Isaac Sim 6.2** on Linux x86_64 and aarch64
 (DGX Spark). Isaac Lab 3.0 is installed and run with [uv](https://docs.astral.sh/uv/);
 there is no `isaaclab.sh` and no separate Isaac Sim install. Clone this repository
-into `IsaacLab/scripts/Isaac-hydraulic-actuator` and run every command below **from
-the Isaac Lab root**:
+into `IsaacLab/scripts/Isaac-hydraulic-actuator`. Demo and controller commands run
+**from the Isaac Lab root**; the dataset workflow below uses the project directory:
 
 ```bash
 git clone https://github.com/isaac-sim/IsaacLab.git --branch v3.0.0
@@ -21,7 +21,7 @@ cd IsaacLab
 git clone https://github.com/eetmie/Isaac-hydraulic-actuator.git scripts/Isaac-hydraulic-actuator
 
 uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/sim.py \
-    --model scripts/Isaac-hydraulic-actuator/models/arm_v5 \
+    --model scripts/Isaac-hydraulic-actuator/models/actuator \
     --slew-model scripts/Isaac-hydraulic-actuator/models/slew
 ```
 
@@ -54,12 +54,12 @@ The Kit window opens in NN mode. Connect an Xbox-compatible controller:
 
 Step two of the Egli & Hutter recipe: a PPO policy receives a desired bucket-tip
 twist `(X, Z, bucket pitch rate)` and outputs the three valve commands directly.
-The frozen V5 steady actuator network is the plant, so training runs as batched
+The selected actuator network is the plant, so training runs as batched
 Torch on the GPU with no simulator (~75k steps/s with 4096 environments; a
 1,500-iteration run takes about half an hour). From the Isaac Lab root:
 
 ```bash
-uv run python scripts/Isaac-hydraulic-actuator/train_controller.py --run_name my_run
+uv run python scripts/Isaac-hydraulic-actuator/train_controller.py --actuator-run scripts/Isaac-hydraulic-actuator/runs/actuator --run_name my_run
 ```
 
 Design choices, and the measurement behind each:
@@ -85,7 +85,7 @@ Design choices, and the measurement behind each:
 
 ### Run the draw demo
 
-The prototype controller ships in `models/controller_proto` and is the default,
+The baseline controller ships in `models/controller` and is the default,
 so these commands work on a fresh clone without training. They need RSL-RL,
 which the Isaac Lab environment already includes. From the Isaac Lab root:
 
@@ -176,53 +176,26 @@ uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/export_robot_bun
     --source_profile ../kaivuriprokkis/configuration_files/profiles/jetson --robot jetson_bucket \
     --out ../kaivuriprokkis/configuration_files/profiles/jetson_bucket
 uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/export_robot_bundle.py export \
-    --checkpoint models/controller_v6/model_1798.pt --robot jetson_bucket \
-    --out ../kaivuriprokkis/learned_control/bundles/v6_jetson_bucket
+    --checkpoint models/controller/model_1798.pt --robot jetson_bucket \
+    --out ../kaivuriprokkis/learned_control/bundles/controller_bucket
 ```
 
-`training/test_robot_parity.py` checks the robot copy (sibling checkout) against
+`tests/test_robot_parity.py` checks the robot copy (sibling checkout) against
 the training code: kinematics, governor, observations, sensors, circle and PID.
 Real-robot sessions are kept under `drive_logs/`.
 
 
-## Example rollouts
-
-![V5 free-running rollouts against recorded IMU angles](media/example_rollout.png)
-
-Three fixed 10-second windows from the new held-out recording. Each rollout uses
-measured initial history and recorded valve commands, then feeds back its own
-predictions with **no later measured-state correction**. These are offline neural
-rollouts; Isaac's direct integration was checked against the same calculation.
-The middle window deliberately retains a substantial bucket tracking error.
-
-Note that I'm using hobby grade, uncalibrated ISM330 IMU's. Industry grade 3D systems (Leica, Novatron, and such) will prob lead to _much_ better results.
-
 ## Included models
 
-| Model directory | Motion outputs | Hidden layers | Parameters |
-| --- | --- | --- | ---: |
-| `models/arm_v5` | Boom, arm, bucket, carriage pitch | 512 / 512 / 384, ReLU | 579,972 |
-| `models/arm_v4` | Boom, arm, bucket, carriage pitch | 512 / 512 / 384, ReLU | 579,972 |
-| `models/slew` | Slew | 32 / 32, tanh | 2,145 |
+`models/actuator` is the frozen historical actuator baseline; `models/slew` is
+an independent slew network. `models/controller` contains the historical PPO
+baseline and its plant/geometry contract. Weights and normalization arrays are
+unchanged by this cleanup. The baseline actuator has **not** been retrained on
+the complete dataset. New MLP and PPO runs write their own artifacts and contracts.
 
-
-| Held-out endpoint MAE | 10 seconds | 30 seconds |
-| --- | ---: | ---: |
-| V5 arm, new IMUs | 2.73° | 5.27° |
-| V5 arm, older IMUs corrected offline | 3.11° | 5.70° |
-| V4 arm, new IMUs | 3.49° | 6.78° |
-| V4 arm, older IMUs corrected offline | 3.71° | 6.17° |
-| Slew (gyro only, tiny dataset!) | 9.23° | 21.11° |
-
-Arm errors average the three hydraulic joint endpoints across disjoint windows;
-pitch is excluded from that metric. Each arm row uses one held-out recording.
-Slew uses a separate recording containing partial turns, so full-turn hardware
-accuracy is still unmeasured. These errors are relative to IMU measurements,
-not external ground truth. Bucket drift and imperfect pitch oscillations remain.
-
-Each model directory contains its weights, normalization arrays, channel/architecture
-metadata, and a release manifest with SHA-256 hashes. No dataset download or
-training step is needed to run the demo.
+A controller checkpoint pins the exact actuator and USD it was trained with.
+If either changes, train a new controller or use the original matching artifacts;
+the loader checks those hashes. See [robot deployment](docs/robot_deployment.md).
 
 ## How integration works
 
@@ -233,7 +206,7 @@ velocity_next = velocity + model(position, velocity_history, valve_history)
 position_next = position + 0.01 * velocity_next
 ```
 
-V4 and V5 select `direct` integration automatically. The learned joints are written
+The actuator selects `direct` integration automatically. The learned joints are written
 directly into simulation; their physical drives and carriage springs are disabled
 so they do not fight the predicted motion. This demo models free motion and does
 not provide a validated contact or digging-force response. Arm limits still apply,
@@ -241,7 +214,7 @@ and a held valve at an end stop cannot induce a learned rebound.
 
 The assets include the tested target-drive gains: arm 2400 N·m/rad and
 120 N·m·s/rad; slew 600 N·m/rad and 40 N·m·s/rad. The alternative `target`
-integration route remains available for compatible three-joint models; V4 and V5 require
+integration route remains available for compatible three-joint models; the four-channel actuator requires
 `direct`.
 
 For direct Python use, only NumPy and PyTorch are needed. From the Isaac Lab root:
@@ -253,7 +226,7 @@ import numpy as np
 sys.path.insert(0, "scripts/Isaac-hydraulic-actuator")
 from actuators import HydraulicActuatorNet
 
-model = HydraulicActuatorNet("scripts/Isaac-hydraulic-actuator/models/arm_v5", sim_dt=0.01)
+model = HydraulicActuatorNet("scripts/Isaac-hydraulic-actuator/models/actuator", sim_dt=0.01)
 model.reset()
 q = np.array([-0.5498, 1.2549, -0.7540, 0.0], dtype=np.float32)  # rad: boom, arm, bucket, pitch
 v = np.zeros(4, dtype=np.float32)                              # rad/s
@@ -267,29 +240,80 @@ This minimal loop starts with zero command/velocity history and omits the demo's
 joint-limit handling. Slew uses another `HydraulicActuatorNet` instance with
 one position, one velocity and one valve channel.
 
+## Dataset → actuator MLP → PPO
+
+There is one local corpus: `dataset/complete_dataset`. It contains **33 unique
+recordings**, 317.7 recorded minutes and **292.9 usable training minutes** in 168
+contiguous 100 Hz chunks. September orientations are rebuilt with the robot's
+current fusion settings (gain 0.5, rejection 5°, recovery 2 seconds); matching
+October orientations are retained. Velocity targets remain unsmoothed raw gyro.
+Historical recording labels live in provenance, not separate training pipelines.
+See [the fusion audit](docs/offline_fusion_audit.md).
+
+From the actuator project directory, use the Isaac Lab environment:
+
+```bash
+cd scripts/Isaac-hydraulic-actuator
+uv run --project ../.. python -m training.prepare --out runs/actuator
+uv run --project ../.. python -m training.actuator train --out runs/actuator --scratch
+uv run --project ../.. python -m training.actuator evaluate --out runs/actuator --split development
+uv run --project ../.. python train_controller.py --actuator-run runs/actuator --run_name controller --set gyro_observations=true
+```
+
+Preparation validates hashes and keeps each collection group in one split. The
+held-out development group defaults to the September 9 collection.
+Use `--dev-groups` and `--test-groups` to reserve other complete collection groups
+before training; the default has no independent test set. Each run freezes its
+split, so use a fresh output directory to change it.
+
+MLP training predicts velocity increments from position, measured gyro history
+and valve history. `--scratch` fits fresh normalization statistics and starts
+from random weights; omit it to fine-tune `models/actuator`. Development rollouts,
+closed-valve drift and stopping checks select between the candidate and the
+baseline. `runs/actuator/selection.json` records the selected artifact, its
+fingerprint and the dataset/split hashes. The historical baseline may have seen
+these recordings, so its metrics are not an independent held-out result.
+
+PPO's `--actuator-run` reads that selection and verifies the selected model's
+fingerprint before training. Its saved contract records the actuator, current
+USD, sensor layout and MLP dataset/split provenance. It uses the selected model,
+which can be the baseline if the candidate fails acceptance. For an explicit
+artifact instead, use `train_controller.py --model PATH`.
+PPO checkpoints are saved under `logs/rsl_rl/hydraulic_controller/<time>_<run>/`.
+Pass a resulting `model_<iteration>.pt` to `run_controller.py --checkpoint` for
+playback. Training a new model does not overwrite the packaged baselines.
+
+The corpus is already processed. To check or rerun fusion from canonical raw IMUs:
+
+```bash
+uv run --project ../.. python -m training.offline_fusion audit
+uv run --project ../.. python -m training.offline_fusion replay INPUT_IMU.npz OUTPUT_IMU.npz
+```
+
+The tool needs a host C compiler. See the audit for input units and the limits of
+replaying 200 Hz recordings from the 416 Hz firmware. Raw inputs, recording
+provenance, corpus validation and checksums stay with the dataset. Dataset files,
+run outputs and retired release archives are local and ignored by Git.
+
 ## Repository layout
 
-For the gyro-history controller, USD-matched bucket deployment profile, fixed-tip
-rotation results and Jetson shadow/robot instructions, see
-[the hardware transfer guide](docs/gyro_transfer.md). Simulation acceptance is
-complete; physical robot acceptance is still pending.
+For USD-matched deployment profiles and Jetson instructions, see
+[the hardware transfer guide](docs/robot_deployment.md).
 
 - `sim.py`, `sim_common.py`, `endstop_guard.py`: excavator demo and joint configuration.
 - `actuators/`: reusable MLP inference and direct/target integration.
 - `hydraulic_controller/`, `train_controller.py`, `run_controller.py`: learned valve controller training, benchmark and playback.
 - `measure_speeds.py`, `replay_pid.py`, `tune_pid.py`: robot PID replay and tuning. `hydraulic_controller/tasks.py` and `closed_loop.py` hold the controller-neutral scenarios and loop; `pid.py`, `pid_tuning.py` and `speed_limits.py` the PID side; `mpc.py`, the `PolicyController` in `policy.py` and `comparison.py` / `compare_controllers.py` the controller comparison.
-- `assets/`: self-contained bucket/gripper USDs; V4 and V5 select the pitch-capable `_rocking` variants.
-- `models/`: the selected V4, V5 and slew releases, plus `arm_v5_steady`, the controller's plant, and `controller_proto`, the prototype controller.
-- `training/`: reusable CSV/LeRobot training, evaluation, and regression checks.
+- `assets/`: self-contained bucket/gripper USDs; the actuator uses the pitch-capable `_rocking` variants.
+- `models/`: the actuator, slew and controller baselines, each with metadata and hashes.
+- `training/`: canonical dataset preparation, raw-gyro training/evaluation, native log ingestion, and audited offline fusion.
+- `tests/`: actuator, dataset, controller, and deployment regression checks; `soil2d/tests/` stays with its owner.
 - `media/`: the README rollout figure.
 
-The generic trainer is a baseline training tool, not the
-complete V4/V5 fine-tuning recipe. To inspect its options or check the release:
+Run regression tests from this project directory with the Isaac Lab environment:
 
 ```bash
-uv run --with pandas python scripts/Isaac-hydraulic-actuator/training/train.py --help
-uv run --with pandas python scripts/Isaac-hydraulic-actuator/training/eval.py --help
-uv run --with pytest --extra isaacsim python -m pytest scripts/Isaac-hydraulic-actuator/training -q
+uv run --project ../.. --with pytest python -m pytest tests -q
 ```
 
 Development formatting and checks use `pre-commit run --all-files` from this

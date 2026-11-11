@@ -1,0 +1,15 @@
+{
+  "version": "controller-baseline",
+  "source": "logs/rsl_rl/hydraulic_controller/2026-09-16_20-03-52_gyro_transfer/model_1798.pt",
+  "resumed_from": "logs/rsl_rl/hydraulic_controller/2026-09-15_19-54-48_v8_ent01_nogov_s3/model_1499.pt",
+  "reason": "Historical gyro-history controller baseline; current training workflow is documented in README.md",
+  "plant": "models/actuator",
+  "asset": "assets/excavator_bucket_rocking.usd",
+  "paths": "controller_contract.json and params/env.yaml store repository-relative paths",
+  "files": {
+    "model_1798.pt": "8c180b80d3b5c78166a67261ee9b4a4048466417642813a11f77dd27186d2673",
+    "controller_contract.json": "54f80f6578a59600fcfc9acfb191f6e15ff2254d69ce4e840229963933947147",
+    "params/agent.yaml": "76a234571a2fa7a1fe0b8ceac61c00dbbd10be40147ead84d4819366d690b040",
+    "params/env.yaml": "2921ad2315f8eeea2ca98b5b794bd736cb27d297223b19892c8934ed0dd1e479"
+  }
+}

@@ -3,7 +3,7 @@
 No simulator is launched: the frozen actuator MLP is the plant, and thousands of environments run as batched
 Torch on the GPU. From the Isaac Lab root::
 
-    uv run python scripts/Isaac-hydraulic-actuator/train_controller.py --run_name baseline
+    uv run python scripts/Isaac-hydraulic-actuator/train_controller.py --actuator-run scripts/Isaac-hydraulic-actuator/runs/actuator
 
 Checkpoints land in ``logs/rsl_rl/hydraulic_controller/<time>_<run_name>/`` next to ``controller_contract.json``,
 which ``run_controller.py`` uses to rebuild the exact plant, kinematics and observation layout.
@@ -103,6 +103,11 @@ def main() -> int:
     )
     parser.add_argument("--activation", default="tanh", help="Hidden activation of actor and critic.")
     parser.add_argument("--device", default="cuda:0")
+    model_source = parser.add_mutually_exclusive_group()
+    model_source.add_argument(
+        "--actuator-run", type=Path, help="Use the verified selected MLP from this actuator training run"
+    )
+    model_source.add_argument("--model", type=Path, help="Use an explicit actuator model directory")
     parser.add_argument("--no_randomize", action="store_true", help="Disable plant perturbations and noise.")
     parser.add_argument("--resume", help="Checkpoint to continue from (weights and optimizer).")
     parser.add_argument(
@@ -114,7 +119,21 @@ def main() -> int:
     import yaml
     from rsl_rl.runners import OnPolicyRunner
 
+    from hydraulic_controller.core import model_fingerprint, sha256
     from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    actuator_training = None
+    if args.actuator_run:
+        selection_path = args.actuator_run / "selection.json"
+        selection = json.loads(selection_path.read_text())
+        args.model = Path(selection["selected"])
+        if model_fingerprint(args.model) != selection["selected_fingerprint"]:
+            raise ValueError("Selected actuator changed since MLP selection; use the original artifact")
+        actuator_training = {
+            "selection_sha256": sha256(selection_path),
+            "dataset_manifest_sha256": selection["dataset_manifest_sha256"],
+            "split_manifest_sha256": selection["split_manifest_sha256"],
+        }
 
     agent = agent_config(args, args.policy_hz)
     cfg = HydraulicControlEnvCfg(
@@ -127,9 +146,13 @@ def main() -> int:
     )
     for item in args.set:
         key, _, value = item.partition("=")
+        if key == "model_path" and args.model is not None:
+            parser.error("Use either --set model_path or --model/--actuator-run")
         if not hasattr(cfg, key):
             parser.error(f"Unknown environment field: {key}")
         setattr(cfg, key, type(getattr(cfg, key))(yaml.safe_load(value)))
+    if args.model is not None:
+        cfg.model_path = str(args.model.resolve())
 
     torch.backends.cuda.matmul.allow_tf32 = True
     env = HydraulicControlEnv(cfg)
@@ -141,7 +164,10 @@ def main() -> int:
     (log_dir / "params/env.yaml").write_text(
         yaml.safe_dump(json.loads(json.dumps(asdict(cfg))), sort_keys=False)
     )
-    (log_dir / "controller_contract.json").write_text(json.dumps(env.contract(), indent=2) + "\n")
+    contract = env.contract()
+    if actuator_training is not None:
+        contract["actuator_training"] = actuator_training
+    (log_dir / "controller_contract.json").write_text(json.dumps(contract, indent=2) + "\n")
     print(f"[INFO] Logging to {log_dir}")
     print(
         f"[INFO] {cfg.num_envs} envs at {cfg.policy_hz} Hz, {agent['num_steps_per_env']} steps/env per iteration, "

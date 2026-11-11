@@ -26,7 +26,7 @@ GRIPPER_JOINT_NAMES = ["revolute_gripper", "revolute_claw_1", "revolute_claw_2"]
 
 # Trained model directories, one per joint group. A missing optional slew
 # directory enables the demo's stick-velocity fallback.
-DEFAULT_ARM_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "arm_v4")
+DEFAULT_ARM_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "actuator")
 DEFAULT_SLEW_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "slew")
 
 # End-effector variants shipped in assets/. The bucket asset welds a bucket to

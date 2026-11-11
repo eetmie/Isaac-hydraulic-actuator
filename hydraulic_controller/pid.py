@@ -2,7 +2,7 @@
 
 Gains are tensors broadcast to ``[envs, joints]``, so every environment can run its own tuning. The arithmetic
 follows ``PIDController.compute`` line for line, so gains tuned here can go straight into the robot's
-``control_config.yaml``; ``training/test_pid.py`` checks this against the robot file itself.
+``control_config.yaml``; ``tests/test_pid.py`` checks this against the robot file itself.
 
 ``JointPIDController`` is the robot's whole loop as a ``closed_loop`` controller: for tip lines the
 damped-least-squares IK step ``dq = J^T (J J^T + lambda^2 I)^-1 e`` toward the reference pose, ``q + dq`` as the

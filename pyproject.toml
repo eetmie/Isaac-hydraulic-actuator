@@ -9,11 +9,11 @@ select = ["E4", "E7", "E9", "F", "I"]
 [tool.ruff.lint.per-file-ignores]
 # Kit-only imports must follow launch_simulation; standalone training scripts set sys.path.
 "sim.py" = ["E402"]
-"training/test_*.py" = ["E402"]
+"tests/test_*.py" = ["E402"]
 
 [tool.pytest.ini_options]
 # Lets `pytest` find hydraulic_controller/ and actuators/ from any working directory,
-# e.g. from the Isaac Lab root as `scripts/Isaac-hydraulic-actuator/training`.
+# e.g. from the Isaac Lab root as `scripts/Isaac-hydraulic-actuator/tests`.
 pythonpath = ["."]
-testpaths = ["training", "soil2d/tests"]
+testpaths = ["tests", "soil2d/tests"]
 norecursedirs = ["local", "runs", ".git"]

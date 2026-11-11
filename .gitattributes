@@ -11,3 +11,5 @@
 models/** -text whitespace=cr-at-eol
 # Recorded robot bundles are hash-pinned by their contract.json, byte for byte.
 drive_logs/** -text
+# Pinned firmware/vendor evidence must retain its original bytes.
+training/fusion/** -text -whitespace

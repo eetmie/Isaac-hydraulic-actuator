@@ -13,7 +13,7 @@ import torch
 from actuators import HydraulicActuatorNet
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL = ROOT / "models/arm_v5_steady"
+DEFAULT_MODEL = ROOT / "models/actuator"
 DEFAULT_ASSET = ROOT / "assets/excavator_bucket_rocking.usd"
 JOINT_NAMES = ["revolute_lift", "revolute_tilt", "revolute_tool", "revolute_carriage_pitch"]
 HOME = [-0.5498, 1.2549, -0.7540, 0.0]

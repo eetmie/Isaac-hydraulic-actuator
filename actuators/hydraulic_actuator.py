@@ -32,7 +32,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-# Must mirror training/dataset.py ACTIVATIONS. Both entries are parameterless, so
+# Both supported activations are parameterless, so
 # the nn.Sequential numbering -- and hence the state_dict keys loaded below with
 # strict=True -- is the same whichever is used.
 ACTIVATIONS = {"relu": nn.ReLU, "tanh": nn.Tanh}

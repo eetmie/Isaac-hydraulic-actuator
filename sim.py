@@ -117,7 +117,7 @@ parser.add_argument(
     help="Wall seconds between sim/wall real-time multiplier prints; 0 disables (startup excluded)",
 )
 parser.add_argument(
-    "--replay_npz", default=None, help="Replay a continuous NPZ chunk containing q, v_smooth21, u and t"
+    "--replay_npz", default=None, help="Replay a continuous NPZ chunk containing q, v, u and t"
 )
 parser.add_argument(
     "--replay_start", type=int, default=200, help="Replay start sample, leaving measured history for warmup"
@@ -795,7 +795,7 @@ def run(sim_cfg):
     slew_rows = []
     if args_cli.replay_npz:
         with np.load(args_cli.replay_npz) as source:
-            replay = {key: source[key] for key in ("q", "v_smooth21", "u", "t")}
+            replay = {key: source[key] for key in ("q", "v", "u", "t")}
             for key in ("slew_q", "slew_v", "slew_u"):
                 if key in source:
                     replay[key] = source[key]
@@ -820,7 +820,7 @@ def run(sim_cfg):
         initial_pos = default_pos.clone()
         initial_vel = default_vel.clone()
         initial_pos[0, arm_actuator.joint_ids] = torch.as_tensor(replay["q"][start], device=device)
-        initial_vel[0, arm_actuator.joint_ids] = torch.as_tensor(replay["v_smooth21"][start], device=device)
+        initial_vel[0, arm_actuator.joint_ids] = torch.as_tensor(replay["v"][start], device=device)
         if "slew_q" in replay:
             initial_pos[0, slew_actuator.joint_ids] = torch.as_tensor(replay["slew_q"][start], device=device)
             initial_vel[0, slew_actuator.joint_ids] = torch.as_tensor(replay["slew_v"][start], device=device)
@@ -836,7 +836,7 @@ def run(sim_cfg):
             held_rocking.reset()
         arm_controller.reset()
         for row in range(start - history, start):
-            arm_controller.predict_velocity(replay["q"][row], replay["v_smooth21"][row], replay["u"][row])
+            arm_controller.predict_velocity(replay["q"][row], replay["v"][row], replay["u"][row])
         if slew_learned and "slew_q" in replay:
             slew_history = max(
                 slew_controller.hist_q,

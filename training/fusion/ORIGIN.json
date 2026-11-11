@@ -1,0 +1,8 @@
+{
+  "source": "pikkumasi2tb:/home/joel/pico-build/dropout/pico_imu_reader",
+  "build_date": "2026-11-02",
+  "settings_sha256": "cdbedd9b9e3b981cc9b1edb75ad606075c74a36b85765b56af67707aeeef6ff5",
+  "firmware_main_sha256": "39d4b686f9a8a741d4306475681cbb8077d18985c946d36d9e93e64840d42bcb",
+  "fusion_ahrs_sha256": "137a4fb86e79bd9e61f4a68e8ca94eab0c3eec464d87e5240e7c6c25bf251da2",
+  "note": "Actual Fusion sources and initializer; host stubs declare time/I2C types only. Wrapper and extracted firmware reference are audited against this build."
+}

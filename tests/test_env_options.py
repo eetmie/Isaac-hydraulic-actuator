@@ -1,0 +1,237 @@
+"""Opt-in training options: several plant networks, achievable-relative commands, linear error penalties."""
+
+import math
+import shutil
+from pathlib import Path
+
+import pytest
+import torch
+
+from hydraulic_controller.core import DEFAULT_ASSET, DEFAULT_MODEL, HOME, HydraulicModelBatch, MixedModelBatch
+from hydraulic_controller.kinematics import ExcavatorKinematics
+from hydraulic_controller.speed_limits import SpeedTable
+
+ROOT = Path(__file__).resolve().parents[1]
+needs_models = pytest.mark.skipif(not DEFAULT_MODEL.exists(), reason="actuator model missing")
+
+
+@pytest.fixture(scope="module")
+def models(tmp_path_factory):
+    """Two independently weighted plants, without depending on retired releases."""
+    alternate = tmp_path_factory.mktemp("plants") / "alternate"
+    shutil.copytree(DEFAULT_MODEL, alternate)
+    state = torch.load(alternate / "mlp_state_dict.pt", map_location="cpu", weights_only=True)
+    first_weight = next(key for key, value in state.items() if value.ndim == 2)
+    state[first_weight] = state[first_weight] * 1.02
+    torch.save(state, alternate / "mlp_state_dict.pt")
+    (alternate / "release_manifest.json").unlink()
+    return DEFAULT_MODEL, alternate
+
+
+@needs_models
+def test_mixed_batch_runs_each_environment_on_its_own_network(models):
+    mixed = MixedModelBatch(models, 4, "cpu")
+    singles = {i: HydraulicModelBatch(path, 4, "cpu") for i, path in enumerate(models)}
+    generator = torch.Generator().manual_seed(0)
+    q = torch.tensor(HOME).repeat(4, 1)
+    v = torch.zeros(4, 4)
+    for _ in range(30):
+        u = torch.rand(4, 3, generator=generator) * 2 - 1
+        got = mixed.predict(q, v, u)
+        expected = {k: model.predict(q, v, u) for k, model in singles.items()}
+        for row in range(4):
+            torch.testing.assert_close(got[row], expected[row % 2][row])
+        v = got
+    assert not torch.allclose(expected[0], expected[1])  # the two twins really differ
+
+
+@needs_models
+def test_plant_contract_names_the_extra_models(models):
+    from hydraulic_controller.core import HydraulicPlant
+
+    kin = ExcavatorKinematics(DEFAULT_ASSET, "cpu")
+    primary, alternate = models
+    contract = HydraulicPlant(primary, kin, 3, "cpu", extra_models=(alternate,)).contract()
+    assert contract["extra_model_paths"] == [str(alternate)]
+    assert "extra_model_paths" not in HydraulicPlant(primary, kin, 3, "cpu").contract()
+
+
+def test_speed_table_interpolates_and_wraps_direction():
+    axes = [torch.linspace(0.0, 1.0, 3) for _ in range(3)]
+    directions = torch.tensor([0.0, 90.0, 180.0, 270.0])
+    grid = torch.stack(torch.meshgrid(*axes, indexing="ij"), dim=-1)  # [3, 3, 3, 3]
+    speed = grid.sum(-1, keepdim=True) * torch.tensor([1.0, 2.0, 3.0, 4.0])  # linear in q, per direction
+    table = SpeedTable(axes, directions, speed)
+    q = torch.tensor([[0.5, 0.0, 1.0, 0.0], [0.25, 0.25, 0.25, 0.0], [5.0, -1.0, 0.5, 0.0]])
+    east = torch.zeros(3)
+    torch.testing.assert_close(
+        table.lookup(q, east), torch.tensor([1.5, 0.75, 1.5])
+    )  # last row clamps to the grid
+    torch.testing.assert_close(
+        table.lookup(q[:1], torch.tensor([math.radians(45)])), torch.tensor([1.5 * 1.5])
+    )
+    torch.testing.assert_close(
+        table.lookup(q[:1], torch.tensor([math.radians(315)])), torch.tensor([1.5 * 2.5])
+    )
+
+
+@needs_models
+def test_achievable_commands_stay_inside_their_fraction_of_the_table(monkeypatch):
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    flat = SpeedTable(
+        [torch.linspace(-3, 3, 2) for _ in range(3)],
+        torch.tensor([0.0, 180.0]),
+        torch.full((2, 2, 2, 2), 0.05),
+    )
+    import hydraulic_controller.speed_limits as speed_limits
+
+    monkeypatch.setattr(speed_limits.SpeedTable, "load_or_build", classmethod(lambda cls, *a, **k: flat))
+    cfg = HydraulicControlEnvCfg(
+        num_envs=512,
+        device="cpu",
+        command_speed_mode="achievable",
+        over_limit_prob=0.0,
+        zero_speed_prob=0.0,
+        uniform_mix_prob=0.0,
+    )
+    env = HydraulicControlEnv(cfg)
+    env._sample_targets(torch.arange(512))
+    speed = env.target[:, :2].norm(dim=1)
+    assert (speed >= 0.05 * 0.05 - 1e-6).all() and (speed <= 0.9 * 0.05 + 1e-6).all()
+
+
+def test_default_config_keeps_the_original_recipe():
+    from hydraulic_controller.env import HydraulicControlEnvCfg
+
+    cfg = HydraulicControlEnvCfg()
+    assert cfg.extra_model_paths == () and cfg.command_speed_mode == "uniform"
+    assert cfg.linear_error_weight == 0.0 and cfg.angular_error_weight == 0.0
+
+
+def test_pivot_offset_matches_the_kinematics():
+    kin = ExcavatorKinematics(DEFAULT_ASSET, "cpu")
+    generator = torch.Generator().manual_seed(0)
+    lo, hi = kin.limits[:, 0], kin.limits[:, 1]
+    q = lo + (hi - lo) * torch.rand(64, 4, generator=generator)
+    tip, tip_jac = kin.pose_jacobian(q)
+    pivot, pivot_jac = kin.pose_jacobian(q, "pivot")
+    torch.testing.assert_close(tip[:, 2], pivot[:, 2])
+    torch.testing.assert_close(tip[:, :2] - pivot[:, :2], kin.tip_offset(tip[:, 2]), atol=1e-5, rtol=0)
+    assert pivot_jac[:, :2, 2].abs().max() < 1e-6  # the bucket joint only turns the bucket
+    torch.testing.assert_close(tip_jac[:, 2], pivot_jac[:, 2])
+
+
+@needs_models
+def test_motion_starts_continue_moving_states_with_their_histories(models):
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    cfg = HydraulicControlEnvCfg(
+        num_envs=64,
+        device="cpu",
+        extra_model_paths=(str(models[1]),),
+        motion_start_prob=1.0,
+        motion_pool_size=64,
+        gyro_observations=True,
+    )
+    env = HydraulicControlEnv(cfg)
+    moving = env.plant.v[:, :3].abs().amax(1) > 0.02
+    assert moving.float().mean() > 0.5
+    assert (env.plant.u_cmd_history.abs().sum((1, 2)) > 0).float().mean() > 0.5
+    torch.testing.assert_close(env.sensors.history.u, env.plant.u_cmd_history)
+    assert torch.isfinite(env.get_observations()["policy"]).all()
+    for _ in range(25):  # crosses a pool refresh
+        env.step(torch.zeros(64, 3))
+    assert env.contract()["motion_start"]["prob"] == 1.0
+
+
+@needs_models
+def test_pivot_environment_observes_and_rewards_the_pivot():
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    env = HydraulicControlEnv(HydraulicControlEnvCfg(num_envs=8, device="cpu", tracked_point="pivot"))
+    assert env.contract()["tracked_point"] == "pivot" and env.governor.point == "pivot"
+    pose, _ = env.kin.pose_jacobian(env.plant.q, "pivot")
+    torch.testing.assert_close(env.plant.tip_state()[0], pose)
+    env.step(torch.zeros(8, 3))
+
+
+@needs_models
+@pytest.mark.parametrize("w, angular", [(0.0, 0.0), (1 / 3, 0.5), (1.0, 1.5)])
+def test_pose_priority_weights_rotation_like_fixed_angular_weights(w, angular):
+    """w scales both angular terms; w = 1/3 reproduces the fixed 0.5 / 0.5 weights the original recipe used."""
+    pytest.importorskip("rsl_rl")
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    fixed = HydraulicControlEnv(
+        HydraulicControlEnvCfg(
+            num_envs=64, device="cpu", seed=3, angular_weight=angular, angular_error_weight=angular
+        )
+    )
+    slider = HydraulicControlEnv(
+        HydraulicControlEnvCfg(num_envs=64, device="cpu", seed=3, pose_priority=True)
+    )
+    slider.priority.fill_(w)
+    actions = torch.randn(64, 3, generator=torch.Generator().manual_seed(1))
+    torch.testing.assert_close(slider.step(actions)[1], fixed.step(actions)[1])
+
+
+@needs_models
+def test_pose_priority_is_one_noise_free_observation_and_in_the_contract():
+    pytest.importorskip("rsl_rl")
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    env = HydraulicControlEnv(HydraulicControlEnvCfg(num_envs=32, device="cpu", pose_priority=True))
+    plain = env.plant.contract()
+    contract = env.contract()
+    obs = env.get_observations()
+    assert contract["observation_dim"] == plain["observation_dim"] + 1 == obs["policy"].shape[1]
+    assert contract["observation_fields"][-1] == "pose_priority"
+    assert contract["pose_priority"]["default"] == pytest.approx(1 / 3)
+    torch.testing.assert_close(obs["policy"][:, -1], env.priority)
+    assert obs["critic"].shape[1] == obs["policy"].shape[1] + 10
+    assert 0 <= env.priority.min() and env.priority.max() <= 1 and env.priority.std() > 0.1
+    for _ in range(3):
+        obs = env.step(torch.zeros(32, 3))[0]
+    torch.testing.assert_close(obs["policy"][:, -1], env.priority)
+
+
+@needs_models
+def test_carriage_rate_penalty_only_lowers_the_reward():
+    pytest.importorskip("rsl_rl")
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    rewards = {}
+    for weight in (0.0, 1.0):
+        env = HydraulicControlEnv(
+            HydraulicControlEnvCfg(num_envs=64, device="cpu", seed=3, carriage_rate_weight=weight)
+        )
+        generator = torch.Generator().manual_seed(1)
+        rewards[weight] = torch.stack(
+            [env.step(3 * torch.randn(64, 3, generator=generator))[1] for _ in range(6)]
+        )
+    assert (rewards[1.0] <= rewards[0.0] + 1e-6).all()
+    assert (rewards[1.0] < rewards[0.0] - 1e-4).any()
+
+
+@needs_models
+@pytest.mark.parametrize("hz", [10, 20, 25, 50])
+def test_time_scaled_rewards_weigh_each_second_alike_at_any_policy_rate(hz):
+    """Tracking and penalty terms are per 0.05 s: one simulated second weighs 20 units at every policy rate."""
+    pytest.importorskip("rsl_rl")
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    env = HydraulicControlEnv(HydraulicControlEnvCfg(num_envs=2, device="cpu", policy_hz=hz))
+    assert env.time_scale * hz == pytest.approx(20.0)
+
+
+def test_controller_policy_appends_the_pose_priority_slider():
+    from hydraulic_controller.policy import ControllerPolicy
+
+    policy = ControllerPolicy.__new__(ControllerPolicy)
+    policy.contract = {"observation_dim": 5, "pose_priority": {"default": 1 / 3}}
+    policy.has_pose_priority, policy.pose_priority = True, 0.75
+    policy.inference = lambda x: x
+    out = policy(torch.zeros(2, 4))
+    assert out.shape == (2, 5) and (out[:, -1] == 0.75).all()
+    assert policy(torch.ones(2, 5)).shape == (2, 5)  # already complete: left alone

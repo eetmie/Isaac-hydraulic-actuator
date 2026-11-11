@@ -1,25 +1,22 @@
 # Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-"""Turn the robot's drive_log/imu_raw pairs into gyro_transfer training chunks.
+"""Import the robot's drive_log/imu_raw pairs as raw-gyro staging chunks.
 
 kaivuriprokkis writes the same pair from operator recordings (simple_drive.py)
 and controller runs (learned_control/run_circle.py). Run as
 ``python -m training.drive_logs prepare --split train --out runs/<name> --logs drive_log_*.csv``.
-Each continuous usable stretch becomes ``<out>/data/<split>/<log stem>_NNN.npz``
-with the arrays training.gyro_transfer trains and evaluates on:
+Each continuous usable stretch becomes ``<out>/data/<split>/<log stem>_NNN.npz``.
+Review and add these recordings to the canonical complete corpus before preparing
+frozen training splits with ``training.prepare``. Staging manifests are
+not accepted directly by the trainer. Arrays follow its sensor contract:
 
     t          uniform 100 Hz ticks on the drive log's clock [s]
     q          joint angles and carriage pitch from the last IMU frame at each tick [rad]
     v          same-frame aligned gyro rates [rad/s] (the model's velocity input)
     u          valve command held at each tick, lift/tilt/scoop [-1, 1]
     target_q   q, the rollout position target
-    target_v   the rollout velocity target, by --target_v:
-                 gyro      v itself (default)
-                 smooth21  21-sample Savitzky-Golay derivative of q, the label the
-                           V2-V5 models were trained on. It passes 5 Hz at 0.84,
-                           7 Hz at 0.54 and 10 Hz at 0.03 of the true rate, so it
-                           hides the fast valve response; kept for comparisons.
+    target_v   v itself: same-packet relative gyro rates, without smoothing.
 
 A tick is usable when its drive-log row has a live command (cmd_stale=0, command
 age <= 30 ms), the rows are consecutive, and the IMU frame its pose came from is
@@ -34,13 +31,12 @@ import json
 from pathlib import Path
 
 import numpy as np
-from scipy.signal import savgol_filter
 
 from hydraulic_controller.sensors import ROLES, SENSOR_CONTRACT, aligned_rates, imu_positions
 
 DT = 0.01
 MAX_AGE = 0.03  # same freshness bound as causal_indices
-SMOOTH = 21  # smooth21 window; both targets trim it from chunk ends, where the filter is one-sided
+EDGE_TRIM = 10  # Discard edge samples before exposing a continuous training chunk.
 COMMANDS = ("combined_cmd_lift", "combined_cmd_tilt", "combined_cmd_scoop")
 
 
@@ -125,14 +121,26 @@ def native_manifest(drive_log, required=False):
     return manifest
 
 
-def load_pair(drive_log, min_seconds=3.0, target_v="gyro"):
+def load_pair(drive_log, min_seconds=3.0):
     """Usable chunks of one recording, and a report of what was kept."""
     raw_log = raw_path_for(drive_log)
     d = read_columns(
         drive_log,
         ("timestamp", "state_imu_ts_us", "cmd_stale", *COMMANDS),
-        ("sample_idx", "cmd_age_s", "pump_on", "write_ok", "imu_valid", "input_valid",
-         "state_age_s", "post_write_ns", "dry_pwm", "sine_enabled", "control_source_code", "controller_valid"),
+        (
+            "sample_idx",
+            "cmd_age_s",
+            "pump_on",
+            "write_ok",
+            "imu_valid",
+            "input_valid",
+            "state_age_s",
+            "post_write_ns",
+            "dry_pwm",
+            "sine_enabled",
+            "control_source_code",
+            "controller_valid",
+        ),
     )
     r = read_columns(
         raw_log,
@@ -140,9 +148,7 @@ def load_pair(drive_log, min_seconds=3.0, target_v="gyro"):
         + tuple(f"imu_{role}_gy_dps" for role in ROLES),
         ("host_read_ns",),
     )
-    native = native_manifest(
-        drive_log, required=d["post_write_ns"] is not None and d["dry_pwm"] is not None
-    )
+    native = native_manifest(drive_log, required=d["post_write_ns"] is not None and d["dry_pwm"] is not None)
     contract = dict(SENSOR_CONTRACT)
     if native is not None:
         sensor = native.get("sensor_contract", {})
@@ -202,23 +208,19 @@ def load_pair(drive_log, min_seconds=3.0, target_v="gyro"):
         for lo, hi in zip((a, *breaks), (*breaks, b)):
             ticks = np.arange(stamp[lo], stamp[hi - 1] + 1e-9, DT)
             rows = lo + np.searchsorted(stamp[lo:hi], ticks, side="right") - 1
-            if len(ticks) < SMOOTH + 1:
+            if len(ticks) < 2 * EDGE_TRIM + 1:
                 continue
             ids = frame[rows]
             q = imu_positions(quats[ids])
             v = aligned_rates(gyro[ids])
-            if target_v == "smooth21":
-                target = savgol_filter(q, SMOOTH, 3, deriv=1, delta=DT, axis=0).astype(np.float32)
-            else:
-                target = v
-            keep = slice(SMOOTH // 2, -(SMOOTH // 2))
+            keep = slice(EDGE_TRIM, -EDGE_TRIM)
             chunk = {
                 "t": ticks[keep],
                 "q": q[keep],
                 "v": v[keep],
                 "u": commands[rows][keep].astype(np.float32),
                 "target_q": q[keep],
-                "target_v": target[keep],
+                "target_v": v[keep],
             }
             if len(chunk["t"]) >= min_seconds / DT:
                 chunks.append(chunk)
@@ -266,10 +268,8 @@ def prepare(args):
     dest.mkdir(parents=True, exist_ok=True)
     manifest_path = args.out / f"drive_logs_{args.split}.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {"recordings": []}
-    if manifest.setdefault("target_v", args.target_v) != args.target_v:
-        raise ValueError(
-            f"{manifest_path.name} holds target_v={manifest['target_v']}; use one label per split"
-        )
+    if manifest.setdefault("target_v", "gyro") != "gyro":
+        raise ValueError("Existing split uses different velocity targets; start a fresh output directory")
     known = {entry["drive_log"] for entry in manifest["recordings"]}
     other_splits = []
     for path in args.out.glob("drive_logs_*.json"):
@@ -278,7 +278,7 @@ def prepare(args):
     for drive_log in args.logs:
         if drive_log.name in known:
             raise FileExistsError(f"{drive_log.name} is already in {manifest_path.name}")
-        chunks, report = load_pair(drive_log, args.min_seconds, args.target_v)
+        chunks, report = load_pair(drive_log, args.min_seconds)
         checksum = digest(drive_log)
         for entry in other_splits:
             same_session = (
@@ -286,7 +286,8 @@ def prepare(args):
                 and entry.get("source_session_id") == report["source_session_id"]
             )
             if (
-                same_session or entry.get("drive_log_sha256") == checksum
+                same_session
+                or entry.get("drive_log_sha256") == checksum
                 or entry["drive_log"] == drive_log.name
             ):
                 raise ValueError("Recording session is already assigned to another train/dev/test split")
@@ -310,8 +311,7 @@ def prepare(args):
         )
         known.add(drive_log.name)
         summary = {
-            key: report[key] for key in ("rows", "live_rows", "chunks", "usable_s", "source")
-            if key in report
+            key: report[key] for key in ("rows", "live_rows", "chunks", "usable_s", "source") if key in report
         }
         print(f"{drive_log.name}: {summary}", flush=True)
     manifest.update(dt=DT)
@@ -325,9 +325,8 @@ def main():
     parser.add_argument("mode", choices=("prepare",))
     parser.add_argument("--logs", type=Path, nargs="+", required=True, help="drive_log_*.csv files")
     parser.add_argument("--split", choices=("train", "dev", "test"), required=True)
-    parser.add_argument("--out", type=Path, required=True, help="gyro_transfer experiment directory")
+    parser.add_argument("--out", type=Path, required=True, help="Staging directory for imported chunks")
     parser.add_argument("--min_seconds", type=float, default=3.0, help="Shortest chunk kept")
-    parser.add_argument("--target_v", choices=("gyro", "smooth21"), default="gyro", help="Velocity target")
     prepare(parser.parse_args())
 
 
