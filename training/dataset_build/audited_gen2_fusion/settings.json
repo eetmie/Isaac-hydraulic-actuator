@@ -1,0 +1,10 @@
+{
+  "ahrsGain": 0.5,
+  "ahrsAccelRejection": 5.0,
+  "ahrsRecoveryPeriodS": 2.0,
+  "gyroRangeDps": 500.0,
+  "accelRangeG": 4.0,
+  "gyro_saturation_dps": 573.44,
+  "convention": "NWU",
+  "source": "robot Nov-2 dropout build source; same AHRS/settings as current robot repository"
+}

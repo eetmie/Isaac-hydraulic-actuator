@@ -5,7 +5,11 @@ The exact scripts and sources that built `dataset/complete_dataset`
 kept byte-for-byte: the C sources match `source_code_sha256` in its `dataset.json`.
 They are a record, not a maintained tool. Input paths are hard-coded to the original
 machines (Desktop CSV exports and the robot's `actuator-data` folder), so they do not run
-elsewhere as is. Processing notes are in the dataset's `provenance/PROCESSING.md`.
+elsewhere as is.
+
+`PROCESSING.md` (the dataset's original README) and `FUSION_AUDIT.md` describe the processing and
+the fusion audit; the JSON files are the source inventories, firmware hash comparison and audit
+results. They are unchanged, so their `provenance/` paths mean this folder.
 
 - `build_complete_dataset.py`, `expand_gen2_dataset.py`, `gen2_fusion.py`: September export,
   then the October robot recordings and gen2 orientation replay.

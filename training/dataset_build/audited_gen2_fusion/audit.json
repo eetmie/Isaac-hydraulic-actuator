@@ -1,0 +1,106 @@
+{
+  "settings": {
+    "ahrsGain": 0.5,
+    "ahrsAccelRejection": 5.0,
+    "ahrsRecoveryPeriodS": 2.0,
+    "gyroRangeDps": 500.0,
+    "accelRangeG": 4.0,
+    "gyro_saturation_dps": 573.44,
+    "convention": "NWU",
+    "source": "robot Nov-2 dropout build source; same AHRS/settings as current robot repository"
+  },
+  "synthetic_comparisons": [
+    {
+      "rate_hz": 200,
+      "case": "still",
+      "max_quaternion_component_difference": 0.0,
+      "identical_recovery_flags": true
+    },
+    {
+      "rate_hz": 200,
+      "case": "slow_yaw",
+      "max_quaternion_component_difference": 0.0,
+      "identical_recovery_flags": true
+    },
+    {
+      "rate_hz": 200,
+      "case": "shake_recovery",
+      "max_quaternion_component_difference": 0.0,
+      "identical_recovery_flags": true
+    },
+    {
+      "rate_hz": 200,
+      "case": "gyro_saturation",
+      "max_quaternion_component_difference": 0.0,
+      "identical_recovery_flags": true
+    },
+    {
+      "rate_hz": 416,
+      "case": "still",
+      "max_quaternion_component_difference": 0.0,
+      "identical_recovery_flags": true
+    },
+    {
+      "rate_hz": 416,
+      "case": "slow_yaw",
+      "max_quaternion_component_difference": 0.0,
+      "identical_recovery_flags": true
+    },
+    {
+      "rate_hz": 416,
+      "case": "shake_recovery",
+      "max_quaternion_component_difference": 0.0,
+      "identical_recovery_flags": true
+    },
+    {
+      "rate_hz": 416,
+      "case": "gyro_saturation",
+      "max_quaternion_component_difference": 0.0,
+      "identical_recovery_flags": true
+    }
+  ],
+  "source_sha256": {
+    "firmware_reference": "37cc86a4d746535c04adf802b00a6ef32c93ad6e392e803ba53fb69899f9fb61",
+    "replay.c": "b747138e37e6b123d9f0c6bf0221a620b69074964efc98a81173736ccd37f212",
+    "imu_reader.h": "ded87c12b8ab800e3351cb37127ed906670716c7adb76ff5683c403f5fb10c71",
+    "sensor_config.h": "0668d233f9c2a0eaa5587c633738eaab754c05a2862adddc138ea9cf1264fd77",
+    "sensor_driver.c": "f9c3b7acb11cd913470cf442b3720824d6502d1be4e4753727b0f92e3184a681",
+    "i2c_helpers.h": "dd1e65241020275e480c9f023566ad3d27cad42dfac5d4d1b9c176732d1eede5",
+    "settings.c": "cdbedd9b9e3b981cc9b1edb75ad606075c74a36b85765b56af67707aeeef6ff5",
+    "settings.h": "c5db6432eae7acb12e41e12fc8426a39087010abdc08b7873e0f31f568d55e7f",
+    "settings.json": "736d07a16e07f0b6116a027670f47b96ae65eb8681fed91a169829a15540d265",
+    "replay": "74db0a1beb4dc3210341a123b424018fc96076c82dd19e239e5b7e673b2f4752",
+    "firmware_main.c": "39d4b686f9a8a741d4306475681cbb8077d18985c946d36d9e93e64840d42bcb",
+    "firmware_reference.c": "552336175736b5a78aec5d696274e37af4850e1628c763287e6bab19fcf125af",
+    "pico/time.h": "212ebf4240e3040dc0ba8635c6d8cc463251fdbc35a1fecd61b9da17533efa7a",
+    "Fusion/FusionConvention.h": "c2086dfc9f9d51cab0c2110ff8fe27f1aea0df97f49d10fc76db8666eeb903fc",
+    "Fusion/FusionAhrs.h": "ab84ab2e6dd47774cb09004892c8780c35156381090087099f6c98183c875856",
+    "Fusion/FusionAhrs.c": "137a4fb86e79bd9e61f4a68e8ca94eab0c3eec464d87e5240e7c6c25bf251da2",
+    "Fusion/InitFusion.c": "fa6445f219c3107f8e946ca6fc1d12f4eecba7fe0f18f0fd9d0ac7ea389e7163",
+    "Fusion/FusionCompass.h": "1f01d394c601bb78c3a1291606edac9d065f9010bbd74bb1f839a62ac9002673",
+    "Fusion/FusionAxes.h": "0b9a7f18825441ef6d16f060133f1c5d000a4fceca069978f444e71e7563db4a",
+    "Fusion/InitFusion.h": "241cad900317ad0c3c01c01c9e81df8255903e272a3099cf01d2e42f5e4904e7",
+    "Fusion/FusionCompass.c": "52dde754fc0d834786f831ecf26b197ad75e1c7681caf7a6e1db8a1c530cb9a5",
+    "Fusion/FusionCalibration.h": "ce196ac492ad21549afd95d335341b127d8148996b01f9c4e4f65aa988e19573",
+    "Fusion/FusionOffset.h": "ceacc0c4b358894a73159109a2ab0bae570ad50b9ec3ecd85594a32953a89f3e",
+    "Fusion/FusionMath.h": "5caf4b0fdc1f37ea4bfd1f10dc9f654af3ce712d1fb15e903e19855093388fd2",
+    "Fusion/FusionStructs.h": "575468bcf1645f059664808ebb062e5fb3ef2a7411542f9d3c1e212af0bc6542",
+    "Fusion/FusionOffset.c": "4f4397ec2f63b4b6612d3e418ae0b9efa7f073ac9961253efe5a834da54ad6fc",
+    "Fusion/Fusion.h": "ec1e8022e1c10e02861f400c2834a46ff29c6bb8a1b50bf11293b22c94a49608"
+  },
+  "hardware_identity_limit": "Retained Nov-2 source/build evidence; no Pico flash readback or USB reset was performed.",
+  "old_ready_driver_saturation_case_max_orientation_difference_deg": 152.69931030273438,
+  "old_ready_driver_sha256": "22df7d78954f2ac7357c74a9fe96f0cda704d3bae8471a68ae65b1ee991b733e",
+  "cold_start_comparisons": [
+    {
+      "rate_hz": 200,
+      "max_quaternion_component_difference": 0.0,
+      "identical_recovery_flags": true
+    },
+    {
+      "rate_hz": 416,
+      "max_quaternion_component_difference": 0.0,
+      "identical_recovery_flags": true
+    }
+  ]
+}

@@ -1,0 +1,1046 @@
+{
+  "format": "kaivuri-complete-actuator-v1",
+  "created_utc": "2026-11-11T12:32:31.986567+00:00",
+  "sensor_contract": {
+    "version": 1,
+    "roles": [
+      "base",
+      "boom",
+      "arm",
+      "bucket"
+    ],
+    "velocity_source": "aligned_y_child_minus_parent",
+    "software_filter": "none",
+    "sampling": "latest_complete_packet_not_after_tick",
+    "bias": "firmware_startup_correction_only",
+    "carriage_pitch_zero_rad": -0.004821687005460262,
+    "mount_pitch_rad": [
+      0.0,
+      0.241728109123881,
+      0.017453221928437734,
+      0.0
+    ]
+  },
+  "fusion_target": {
+    "ahrsGain": 0.5,
+    "ahrsAccelRejection": 10.0,
+    "ahrsRecoveryPeriodS": 2.0,
+    "gyroRangeDps": 500.0,
+    "accelRangeG": 4.0,
+    "gyro_saturation_dps": 573.44,
+    "convention": "NWU",
+    "source_revision": "995e3018bbe772f782c7e4c7dfaf0210a3629d6e"
+  },
+  "source_code_sha256": {
+    "provenance/pico_v2/settings/settings.c": "b838f746d721766f8058ff1a4c1d6dd3feeb4b15e84d34bc69e027cc869ee2b4",
+    "provenance/pico_v2/ism330dlc/ism330dlc_config.h": "0668d233f9c2a0eaa5587c633738eaab754c05a2862adddc138ea9cf1264fd77",
+    "provenance/pico_v2/Fusion/Fusion/FusionAhrs.c": "137a4fb86e79bd9e61f4a68e8ca94eab0c3eec464d87e5240e7c6c25bf251da2",
+    "provenance/pico_v2/Fusion/Fusion/FusionAhrs.h": "ab84ab2e6dd47774cb09004892c8780c35156381090087099f6c98183c875856",
+    "provenance/pico_v2/Fusion/Fusion/FusionAxes.h": "0b9a7f18825441ef6d16f060133f1c5d000a4fceca069978f444e71e7563db4a",
+    "provenance/pico_v2/Fusion/Fusion/FusionMath.h": "5caf4b0fdc1f37ea4bfd1f10dc9f654af3ce712d1fb15e903e19855093388fd2",
+    "provenance/pico_v2/Fusion/Fusion/FusionConvention.h": "c2086dfc9f9d51cab0c2110ff8fe27f1aea0df97f49d10fc76db8666eeb903fc",
+    "provenance/pico_v2/Fusion/Fusion/Fusion.h": "ec1e8022e1c10e02861f400c2834a46ff29c6bb8a1b50bf11293b22c94a49608",
+    "provenance/pico_v2/Fusion/Fusion/FusionOffset.c": "4f4397ec2f63b4b6612d3e418ae0b9efa7f073ac9961253efe5a834da54ad6fc",
+    "provenance/pico_v2/Fusion/Fusion/FusionOffset.h": "ceacc0c4b358894a73159109a2ab0bae570ad50b9ec3ecd85594a32953a89f3e",
+    "provenance/pico_v2/Fusion/Fusion/FusionCalibration.h": "ce196ac492ad21549afd95d335341b127d8148996b01f9c4e4f65aa988e19573",
+    "provenance/pico_v2/Fusion/Fusion/FusionCompass.h": "1f01d394c601bb78c3a1291606edac9d065f9010bbd74bb1f839a62ac9002673",
+    "provenance/pico_v2/replay.c": "be5bb44956c1554194ba5710569934dcbb5f2c051f32738c9977397b614d363f"
+  },
+  "dependencies": {
+    "numpy": "2.5.4",
+    "pandas": "3.1.1",
+    "scipy": "1.18.1"
+  },
+  "roles": [
+    "base",
+    "boom",
+    "arm",
+    "bucket"
+  ],
+  "plant_state_names": [
+    "boom",
+    "arm",
+    "bucket",
+    "base_pitch"
+  ],
+  "plant_action_names": [
+    "lift",
+    "tilt",
+    "scoop"
+  ],
+  "training_hz": 100,
+  "clipping_policy": "Conservative near-saturation flag: accel within four output codes of recorded range; gyro within two codes.",
+  "split": "unassigned; keep collection_group together when assigning splits",
+  "recordings": [
+    {
+      "id": "20260907_183614_slew",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_183614_slew.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_183621_slew.csv",
+      "input_sha256": {
+        "drive": "892e357fe5bfb4a8bf61bca7907332eacd73a8791bbce37aa906d791ba68aa3d",
+        "raw": "a414d78974dcad8720d1b9f3d33e6b0ddb28419ff4072b020cdc0c03314b7ecc"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59975,
+      "raw_rows": 119985,
+      "duration_s": 600.0083507180002,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12002,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59973,
+      "valid_control_rows": 53972,
+      "training_usable_s": 539.28,
+      "training_paths": [
+        "training/unsplit/20260907_183614_slew_000.npz",
+        "training/unsplit/20260907_183614_slew_001.npz"
+      ],
+      "imu": "recordings/20260907_183614_slew/imu.npz",
+      "control": "recordings/20260907_183614_slew/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260907_185343",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_185343.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_185350.csv",
+      "input_sha256": {
+        "drive": "1c2e9d43da46a7fde943164d0a5c50ba9c6d567fb97c01936a3fe46980b7f5c3",
+        "raw": "87efb370f8b23dcec2635775bcfb2fd63808770eb35e00512d220a80ea6e0977"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59974,
+      "raw_rows": 119988,
+      "duration_s": 600.0030561620001,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12002,
+      "clipped_raw_rows": 2,
+      "matched_control_rows": 59973,
+      "valid_control_rows": 53970,
+      "training_usable_s": 539.05,
+      "training_paths": [
+        "training/unsplit/20260907_185343_000.npz",
+        "training/unsplit/20260907_185343_001.npz",
+        "training/unsplit/20260907_185343_002.npz"
+      ],
+      "imu": "recordings/20260907_185343/imu.npz",
+      "control": "recordings/20260907_185343/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260907_190750",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_190750.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_190757.csv",
+      "input_sha256": {
+        "drive": "4d7f0c6e564ebe18aecb0ce1b7ebdae02754160f3f6e9a32d5eee6135efcb76d",
+        "raw": "a3572bdf6f417e5c337f57e8b750cd5bf10fda35eca32939469aa9062f15cb72"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59976,
+      "raw_rows": 119990,
+      "duration_s": 600.0062648640005,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12002,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59974,
+      "valid_control_rows": 53975,
+      "training_usable_s": 539.31,
+      "training_paths": [
+        "training/unsplit/20260907_190750_000.npz",
+        "training/unsplit/20260907_190750_001.npz"
+      ],
+      "imu": "recordings/20260907_190750/imu.npz",
+      "control": "recordings/20260907_190750/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260907_192154",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_192154.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_192201.csv",
+      "input_sha256": {
+        "drive": "ad31ec3d0b2e6bc48ca73a5a19e253aedee6f954b9d2547eac4ada61d0740cd8",
+        "raw": "ea1523bf58684f7744b33d07449f16e50e4d2d6587a3d5899dce9f7e0cd51f65"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59955,
+      "raw_rows": 119971,
+      "duration_s": 600.0066759459996,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12000,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59954,
+      "valid_control_rows": 53952,
+      "training_usable_s": 538.88,
+      "training_paths": [
+        "training/unsplit/20260907_192154_000.npz",
+        "training/unsplit/20260907_192154_001.npz",
+        "training/unsplit/20260907_192154_002.npz"
+      ],
+      "imu": "recordings/20260907_192154/imu.npz",
+      "control": "recordings/20260907_192154/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260907_193458",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_193458.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_193505.csv",
+      "input_sha256": {
+        "drive": "5b7d182973985ce04a87cef180432cd69573c9aa1462b16daf44de9f477ea755",
+        "raw": "4b0c07cc9313df6078e56d49385a023c67e8746d71565e68091803b43e17a1b6"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59981,
+      "raw_rows": 119996,
+      "duration_s": 600.0025586390002,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12002,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59980,
+      "valid_control_rows": 53978,
+      "training_usable_s": 539.33,
+      "training_paths": [
+        "training/unsplit/20260907_193458_000.npz",
+        "training/unsplit/20260907_193458_001.npz"
+      ],
+      "imu": "recordings/20260907_193458/imu.npz",
+      "control": "recordings/20260907_193458/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260907_194830",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_194830.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_194837.csv",
+      "input_sha256": {
+        "drive": "933d8d5da1dc66eb40ad048db8e11f24c5962837e864f6c058ce1af85a9d0fb6",
+        "raw": "880c16a171b817b9246d5a334613e56451f746d0fa4b6f83e9609d49894bc060"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59973,
+      "raw_rows": 119980,
+      "duration_s": 600.0055883999994,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12002,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59972,
+      "valid_control_rows": 53971,
+      "training_usable_s": 539.27,
+      "training_paths": [
+        "training/unsplit/20260907_194830_000.npz",
+        "training/unsplit/20260907_194830_001.npz"
+      ],
+      "imu": "recordings/20260907_194830/imu.npz",
+      "control": "recordings/20260907_194830/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260907_200221",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_200221.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_200228.csv",
+      "input_sha256": {
+        "drive": "8a545ffef3c0a72db2b88d6085026d6112f94df8f20586fbbf34c80c6d7f8a77",
+        "raw": "0c8fcab52a71200e77f020e645fbb2f3b4d0668f96104492c881be162463ce5c"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59948,
+      "raw_rows": 119974,
+      "duration_s": 600.0000996979998,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12002,
+      "clipped_raw_rows": 3,
+      "matched_control_rows": 59947,
+      "valid_control_rows": 53945,
+      "training_usable_s": 538.59,
+      "training_paths": [
+        "training/unsplit/20260907_200221_000.npz",
+        "training/unsplit/20260907_200221_001.npz",
+        "training/unsplit/20260907_200221_002.npz",
+        "training/unsplit/20260907_200221_003.npz"
+      ],
+      "imu": "recordings/20260907_200221/imu.npz",
+      "control": "recordings/20260907_200221/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260907_201628",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_201628.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_201635.csv",
+      "input_sha256": {
+        "drive": "575072076d6ee81b0c457ba653ec6ae2488c685933003c468ac784979025e7a5",
+        "raw": "b19bbc90a66d6f9f2c14b537e6c3260525e46117cc4f71d9eafd46a4a22d59a7"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59977,
+      "raw_rows": 119994,
+      "duration_s": 600.005420941,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12002,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59976,
+      "valid_control_rows": 53976,
+      "training_usable_s": 539.32,
+      "training_paths": [
+        "training/unsplit/20260907_201628_000.npz",
+        "training/unsplit/20260907_201628_001.npz"
+      ],
+      "imu": "recordings/20260907_201628/imu.npz",
+      "control": "recordings/20260907_201628/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260907_202907",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_202907.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_202914.csv",
+      "input_sha256": {
+        "drive": "0a6a3d9945bb048b37b19cc4c9035541938afcdcbbacf4e43663e4af20280db9",
+        "raw": "83a190efd1219f91bccdb7ba0d00291b5cd05982438c24a6326b78e70bc44ce8"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59975,
+      "raw_rows": 119984,
+      "duration_s": 600.0046524739992,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12002,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59974,
+      "valid_control_rows": 53973,
+      "training_usable_s": 539.29,
+      "training_paths": [
+        "training/unsplit/20260907_202907_000.npz",
+        "training/unsplit/20260907_202907_001.npz"
+      ],
+      "imu": "recordings/20260907_202907/imu.npz",
+      "control": "recordings/20260907_202907/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260907_203936",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_203936.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_203943.csv",
+      "input_sha256": {
+        "drive": "1e7e40c5d98ea8342b04ef2d62652e08a985ba34cda0a8f8a9ba4018b6f1ba1b",
+        "raw": "49b5a8ca7ed1ccd522c632d84a7d4618c48ff85f25afc4c1272af4fc05d0d6ba"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59975,
+      "raw_rows": 119987,
+      "duration_s": 600.0055203650008,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12001,
+      "clipped_raw_rows": 1,
+      "matched_control_rows": 59974,
+      "valid_control_rows": 53973,
+      "training_usable_s": 539.07,
+      "training_paths": [
+        "training/unsplit/20260907_203936_000.npz",
+        "training/unsplit/20260907_203936_001.npz",
+        "training/unsplit/20260907_203936_002.npz"
+      ],
+      "imu": "recordings/20260907_203936/imu.npz",
+      "control": "recordings/20260907_203936/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260907_205234_validation",
+      "generation": "v1",
+      "source_folder": "hydraulic_data",
+      "collection_group": "v1_20260907",
+      "validation_named": true,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data/drive_log_20260907_205234_validation.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data/imu_raw_20260907_205241_validation.csv",
+      "input_sha256": {
+        "drive": "f02a3172341e019fad6e33b5659e0bc30994c73881d8e892eccd3c0478ed07f7",
+        "raw": "a91fbdc1dadad38c51fc6224d865cc11ce168570ca04ccc4f99f80ecbfe4a945"
+      },
+      "gyro_scale_applied": 1.1468800000000001,
+      "fusion": "offline_v2",
+      "control_rows": 59975,
+      "raw_rows": 119985,
+      "duration_s": 600.0064983039993,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 12002,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59974,
+      "valid_control_rows": 53973,
+      "training_usable_s": 539.28,
+      "training_paths": [
+        "training/unsplit/20260907_205234_validation_000.npz",
+        "training/unsplit/20260907_205234_validation_001.npz"
+      ],
+      "imu": "recordings/20260907_205234_validation/imu.npz",
+      "control": "recordings/20260907_205234_validation/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260909_213516_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "hydraulic_data_2",
+      "collection_group": "v2_20260909",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260909_213516_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data_2/imu_raw_20260909_213523_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "c62e217f3f61986e9e36979f531b453c6e01fe9ab24be9ef7dcd0fae18cc2880",
+        "raw": "7133598579883f83a2a0e3394217634e62cd98890d4e3132d4e66563f8b7fafb"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 59974,
+      "raw_rows": 119986,
+      "duration_s": 600.003297964,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59973,
+      "valid_control_rows": 59972,
+      "training_usable_s": 599.3,
+      "training_paths": [
+        "training/unsplit/20260909_213516_v2_imu_update_000.npz",
+        "training/unsplit/20260909_213516_v2_imu_update_001.npz"
+      ],
+      "imu": "recordings/20260909_213516_v2_imu_update/imu.npz",
+      "control": "recordings/20260909_213516_v2_imu_update/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260909_220038_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "hydraulic_data_2",
+      "collection_group": "v2_20260909",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260909_220038_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data_2/imu_raw_20260909_220045_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "b40699f3b35a1b5dde0baba4c7aefcbe0241105ee107e16349ed4c775a0da2e3",
+        "raw": "f92ffbeee2ecaf04b198f77cfd520a820b51c747146cf4a916b1ad3cc43a3d27"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 59975,
+      "raw_rows": 119987,
+      "duration_s": 600.0010472429999,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59974,
+      "valid_control_rows": 59973,
+      "training_usable_s": 599.31,
+      "training_paths": [
+        "training/unsplit/20260909_220038_v2_imu_update_000.npz",
+        "training/unsplit/20260909_220038_v2_imu_update_001.npz"
+      ],
+      "imu": "recordings/20260909_220038_v2_imu_update/imu.npz",
+      "control": "recordings/20260909_220038_v2_imu_update/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260909_221816_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "hydraulic_data_2",
+      "collection_group": "v2_20260909",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260909_221816_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data_2/imu_raw_20260909_221824_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "7ef5a9720472e88b88e912668af604ad213135ee9c6ece634b59003783706494",
+        "raw": "12c937d2af91b98f7c6a02dfd2009d6c4a07f0426dc58b44b16142acece7f811"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 59975,
+      "raw_rows": 119988,
+      "duration_s": 600.0082365900003,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59974,
+      "valid_control_rows": 59973,
+      "training_usable_s": 599.31,
+      "training_paths": [
+        "training/unsplit/20260909_221816_v2_imu_update_000.npz",
+        "training/unsplit/20260909_221816_v2_imu_update_001.npz"
+      ],
+      "imu": "recordings/20260909_221816_v2_imu_update/imu.npz",
+      "control": "recordings/20260909_221816_v2_imu_update/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260909_222958_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "hydraulic_data_2",
+      "collection_group": "v2_20260909",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260909_222958_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data_2/imu_raw_20260909_223005_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "df563b91e0b5218e4875eb3a3a4dea5b7cb6420884be1d71bf5961d7c0e10a84",
+        "raw": "892bca8b080521bbb8e37ede817f5e087e1771c4c71089e664a332a8ce8a5afc"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 59974,
+      "raw_rows": 119984,
+      "duration_s": 600.0010430490001,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59972,
+      "valid_control_rows": 59971,
+      "training_usable_s": 599.29,
+      "training_paths": [
+        "training/unsplit/20260909_222958_v2_imu_update_000.npz",
+        "training/unsplit/20260909_222958_v2_imu_update_001.npz"
+      ],
+      "imu": "recordings/20260909_222958_v2_imu_update/imu.npz",
+      "control": "recordings/20260909_222958_v2_imu_update/control.npz",
+      "sidecars": [
+        "note.md"
+      ]
+    },
+    {
+      "id": "20260911_172712_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "hydraulic_data_2",
+      "collection_group": "v2_20260911",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260911_172712_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data_2/imu_raw_20260911_172712_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "c15f7504c7fe9de145eb6a1673d38ac31f14c5e6b2cc1f93120a3fa3189938cd",
+        "raw": "f9162b77808cdaccd0b70950a579f31a7a34ab8a19abee0cfb95ede0855013b5"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 59974,
+      "raw_rows": 119972,
+      "duration_s": 600.0074637089999,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59973,
+      "valid_control_rows": 59972,
+      "training_usable_s": 599.3,
+      "training_paths": [
+        "training/unsplit/20260911_172712_v2_imu_update_000.npz",
+        "training/unsplit/20260911_172712_v2_imu_update_001.npz"
+      ],
+      "imu": "recordings/20260911_172712_v2_imu_update/imu.npz",
+      "control": "recordings/20260911_172712_v2_imu_update/control.npz",
+      "sidecars": [
+        "note.md",
+        "excitation_20260911_172712_v2_imu_update.json"
+      ]
+    },
+    {
+      "id": "20260911_174252_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "hydraulic_data_2",
+      "collection_group": "v2_20260911",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260911_174252_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data_2/imu_raw_20260911_174252_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "97d8cdfc28f02953f7fa85d11f901cdf50e4c555f58bedfabd311cab09d5068c",
+        "raw": "98e0971dc33d8ffacbea352e4b66d89332539b08d61807f3715e94c1a8625787"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 59974,
+      "raw_rows": 119983,
+      "duration_s": 600.0060779219998,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59973,
+      "valid_control_rows": 59972,
+      "training_usable_s": 599.3,
+      "training_paths": [
+        "training/unsplit/20260911_174252_v2_imu_update_000.npz",
+        "training/unsplit/20260911_174252_v2_imu_update_001.npz"
+      ],
+      "imu": "recordings/20260911_174252_v2_imu_update/imu.npz",
+      "control": "recordings/20260911_174252_v2_imu_update/control.npz",
+      "sidecars": [
+        "note.md",
+        "excitation_20260911_174252_v2_imu_update.json"
+      ]
+    },
+    {
+      "id": "20260911_175326_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "hydraulic_data_2",
+      "collection_group": "v2_20260911",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260911_175326_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data_2/imu_raw_20260911_175326_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "d9c0eecd62198b290283e1b00277810ab40fec4b270b3900b849746828c34ba8",
+        "raw": "10709c8d1a3bc1cb59046666345efc7a23f7c91f38c4fae2066057c964936d1b"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 59975,
+      "raw_rows": 119987,
+      "duration_s": 600.0050438420003,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59974,
+      "valid_control_rows": 59973,
+      "training_usable_s": 599.31,
+      "training_paths": [
+        "training/unsplit/20260911_175326_v2_imu_update_000.npz",
+        "training/unsplit/20260911_175326_v2_imu_update_001.npz"
+      ],
+      "imu": "recordings/20260911_175326_v2_imu_update/imu.npz",
+      "control": "recordings/20260911_175326_v2_imu_update/control.npz",
+      "sidecars": [
+        "note.md",
+        "excitation_20260911_175326_v2_imu_update.json"
+      ]
+    },
+    {
+      "id": "20260911_180354_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "hydraulic_data_2",
+      "collection_group": "v2_20260911",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260911_180354_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/hydraulic_data_2/imu_raw_20260911_180354_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "4d54596561756831117043375beb79254f20ea617b755c6e6f1e4242c0a2e0dc",
+        "raw": "2c50b8e1a8d990146cd97ffaaa7d854803deeeb9590dac7011c1f79c29daae78"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 59957,
+      "raw_rows": 119974,
+      "duration_s": 600.0080013470001,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59955,
+      "valid_control_rows": 59953,
+      "training_usable_s": 598.9,
+      "training_paths": [
+        "training/unsplit/20260911_180354_v2_imu_update_000.npz",
+        "training/unsplit/20260911_180354_v2_imu_update_001.npz",
+        "training/unsplit/20260911_180354_v2_imu_update_002.npz"
+      ],
+      "imu": "recordings/20260911_180354_v2_imu_update/imu.npz",
+      "control": "recordings/20260911_180354_v2_imu_update/control.npz",
+      "sidecars": [
+        "note.md",
+        "excitation_20260911_180354_v2_imu_update.json"
+      ]
+    },
+    {
+      "id": "20260911_183333_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "V3",
+      "collection_group": "v2_20260911",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/V3/drive_log_20260911_183333_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260911_183333_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "0b37478f53acc97c2bd073206c023723a42b5cd0a55d4068cd97b98daa058284",
+        "raw": "f6ebc4c3b77c180016a16e7a3a67b72e86951e3ac73c66a42d26eec930881170"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 59973,
+      "raw_rows": 119983,
+      "duration_s": 600.0002875370001,
+      "raw_gap_count": 1,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 59971,
+      "valid_control_rows": 59969,
+      "training_usable_s": 599.27,
+      "training_paths": [
+        "training/unsplit/20260911_183333_v2_imu_update_000.npz",
+        "training/unsplit/20260911_183333_v2_imu_update_001.npz"
+      ],
+      "imu": "recordings/20260911_183333_v2_imu_update/imu.npz",
+      "control": "recordings/20260911_183333_v2_imu_update/control.npz",
+      "sidecars": [
+        "excitation_20260911_183333_v2_imu_update.json"
+      ]
+    },
+    {
+      "id": "20260911_183937_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "V3",
+      "collection_group": "v2_20260911",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/V3/drive_log_20260911_183937_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260911_183937_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "ae12cbaa6f440c7827d9ebb7c1f9fb21335390ed7a598b375132e838ac53183f",
+        "raw": "4351682d787ff0a1f6df2dba8f2f6f7801c0893c74673c19a8b069944d114b07"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 28252,
+      "raw_rows": 56505,
+      "duration_s": 282.50994056499985,
+      "raw_gap_count": 0,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 28250,
+      "valid_control_rows": 28250,
+      "training_usable_s": 282.29,
+      "training_paths": [
+        "training/unsplit/20260911_183937_v2_imu_update_000.npz"
+      ],
+      "imu": "recordings/20260911_183937_v2_imu_update/imu.npz",
+      "control": "recordings/20260911_183937_v2_imu_update/control.npz",
+      "sidecars": [
+        "excitation_20260911_183937_v2_imu_update.json"
+      ]
+    },
+    {
+      "id": "20260911_184410_v2_imu_update",
+      "generation": "v2",
+      "source_folder": "V3",
+      "collection_group": "v2_20260911",
+      "validation_named": false,
+      "input_drive": "/home/joel/Desktop/dataset/V3/drive_log_20260911_184410_v2_imu_update.csv",
+      "input_raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260911_184410_v2_imu_update.csv",
+      "input_sha256": {
+        "drive": "0d328521a4798f036f7b441b5d37cba1fe4989e8090891034936da93f131f678",
+        "raw": "d358b757ef2eed740364a60ccb1b5ec331626027d89f701a3feae9769558060c"
+      },
+      "gyro_scale_applied": 1.0,
+      "fusion": "recorded_v2_preserved",
+      "control_rows": 21595,
+      "raw_rows": 43193,
+      "duration_s": 215.95139930099958,
+      "raw_gap_count": 0,
+      "settling_excluded_raw_rows": 0,
+      "clipped_raw_rows": 0,
+      "matched_control_rows": 21594,
+      "valid_control_rows": 21593,
+      "training_usable_s": 215.51,
+      "training_paths": [
+        "training/unsplit/20260911_184410_v2_imu_update_000.npz",
+        "training/unsplit/20260911_184410_v2_imu_update_001.npz"
+      ],
+      "imu": "recordings/20260911_184410_v2_imu_update/imu.npz",
+      "control": "recordings/20260911_184410_v2_imu_update/control.npz",
+      "sidecars": [
+        "excitation_20260911_184410_v2_imu_update.json"
+      ]
+    }
+  ],
+  "duplicate_aliases": [
+    {
+      "drive": "/home/joel/Desktop/dataset/V3/drive_log_20260909_213516_v2_imu_update.csv",
+      "raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260909_213523_v2_imu_update.csv",
+      "duplicate_of": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260909_213516_v2_imu_update.csv",
+      "drive_sha256": "c62e217f3f61986e9e36979f531b453c6e01fe9ab24be9ef7dcd0fae18cc2880",
+      "raw_sha256": "7133598579883f83a2a0e3394217634e62cd98890d4e3132d4e66563f8b7fafb"
+    },
+    {
+      "drive": "/home/joel/Desktop/dataset/V3/drive_log_20260909_220038_v2_imu_update.csv",
+      "raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260909_220045_v2_imu_update.csv",
+      "duplicate_of": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260909_220038_v2_imu_update.csv",
+      "drive_sha256": "b40699f3b35a1b5dde0baba4c7aefcbe0241105ee107e16349ed4c775a0da2e3",
+      "raw_sha256": "f92ffbeee2ecaf04b198f77cfd520a820b51c747146cf4a916b1ad3cc43a3d27"
+    },
+    {
+      "drive": "/home/joel/Desktop/dataset/V3/drive_log_20260909_221816_v2_imu_update.csv",
+      "raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260909_221824_v2_imu_update.csv",
+      "duplicate_of": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260909_221816_v2_imu_update.csv",
+      "drive_sha256": "7ef5a9720472e88b88e912668af604ad213135ee9c6ece634b59003783706494",
+      "raw_sha256": "12c937d2af91b98f7c6a02dfd2009d6c4a07f0426dc58b44b16142acece7f811"
+    },
+    {
+      "drive": "/home/joel/Desktop/dataset/V3/drive_log_20260909_222958_v2_imu_update.csv",
+      "raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260909_223005_v2_imu_update.csv",
+      "duplicate_of": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260909_222958_v2_imu_update.csv",
+      "drive_sha256": "df563b91e0b5218e4875eb3a3a4dea5b7cb6420884be1d71bf5961d7c0e10a84",
+      "raw_sha256": "892bca8b080521bbb8e37ede817f5e087e1771c4c71089e664a332a8ce8a5afc"
+    },
+    {
+      "drive": "/home/joel/Desktop/dataset/V3/drive_log_20260911_172712_v2_imu_update.csv",
+      "raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260911_172712_v2_imu_update.csv",
+      "duplicate_of": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260911_172712_v2_imu_update.csv",
+      "drive_sha256": "c15f7504c7fe9de145eb6a1673d38ac31f14c5e6b2cc1f93120a3fa3189938cd",
+      "raw_sha256": "f9162b77808cdaccd0b70950a579f31a7a34ab8a19abee0cfb95ede0855013b5"
+    },
+    {
+      "drive": "/home/joel/Desktop/dataset/V3/drive_log_20260911_174252_v2_imu_update.csv",
+      "raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260911_174252_v2_imu_update.csv",
+      "duplicate_of": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260911_174252_v2_imu_update.csv",
+      "drive_sha256": "97d8cdfc28f02953f7fa85d11f901cdf50e4c555f58bedfabd311cab09d5068c",
+      "raw_sha256": "98e0971dc33d8ffacbea352e4b66d89332539b08d61807f3715e94c1a8625787"
+    },
+    {
+      "drive": "/home/joel/Desktop/dataset/V3/drive_log_20260911_175326_v2_imu_update.csv",
+      "raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260911_175326_v2_imu_update.csv",
+      "duplicate_of": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260911_175326_v2_imu_update.csv",
+      "drive_sha256": "d9c0eecd62198b290283e1b00277810ab40fec4b270b3900b849746828c34ba8",
+      "raw_sha256": "10709c8d1a3bc1cb59046666345efc7a23f7c91f38c4fae2066057c964936d1b"
+    },
+    {
+      "drive": "/home/joel/Desktop/dataset/V3/drive_log_20260911_180354_v2_imu_update.csv",
+      "raw": "/home/joel/Desktop/dataset/V3/imu_raw_20260911_180354_v2_imu_update.csv",
+      "duplicate_of": "/home/joel/Desktop/dataset/hydraulic_data_2/drive_log_20260911_180354_v2_imu_update.csv",
+      "drive_sha256": "4d54596561756831117043375beb79254f20ea617b755c6e6f1e4242c0a2e0dc",
+      "raw_sha256": "2c50b8e1a8d990146cd97ffaaa7d854803deeeb9590dac7011c1f79c29daae78"
+    }
+  ],
+  "output_sha256": {
+    "provenance/build_complete_dataset.py": "265a5163535fab33eee53f5e5348715dce3ac6c95e522379f8de488003928903",
+    "provenance/input_inventory.json": "2c4ea4ff0713561f2a5cea0878b0ec8a8636942253a0c74545d36845ee3b264e",
+    "provenance/pico_v2/Fusion/Fusion/Fusion.h": "ec1e8022e1c10e02861f400c2834a46ff29c6bb8a1b50bf11293b22c94a49608",
+    "provenance/pico_v2/Fusion/Fusion/FusionAhrs.c": "137a4fb86e79bd9e61f4a68e8ca94eab0c3eec464d87e5240e7c6c25bf251da2",
+    "provenance/pico_v2/Fusion/Fusion/FusionAhrs.h": "ab84ab2e6dd47774cb09004892c8780c35156381090087099f6c98183c875856",
+    "provenance/pico_v2/Fusion/Fusion/FusionAxes.h": "0b9a7f18825441ef6d16f060133f1c5d000a4fceca069978f444e71e7563db4a",
+    "provenance/pico_v2/Fusion/Fusion/FusionCalibration.h": "ce196ac492ad21549afd95d335341b127d8148996b01f9c4e4f65aa988e19573",
+    "provenance/pico_v2/Fusion/Fusion/FusionCompass.h": "1f01d394c601bb78c3a1291606edac9d065f9010bbd74bb1f839a62ac9002673",
+    "provenance/pico_v2/Fusion/Fusion/FusionConvention.h": "c2086dfc9f9d51cab0c2110ff8fe27f1aea0df97f49d10fc76db8666eeb903fc",
+    "provenance/pico_v2/Fusion/Fusion/FusionMath.h": "5caf4b0fdc1f37ea4bfd1f10dc9f654af3ce712d1fb15e903e19855093388fd2",
+    "provenance/pico_v2/Fusion/Fusion/FusionOffset.c": "4f4397ec2f63b4b6612d3e418ae0b9efa7f073ac9961253efe5a834da54ad6fc",
+    "provenance/pico_v2/Fusion/Fusion/FusionOffset.h": "ceacc0c4b358894a73159109a2ab0bae570ad50b9ec3ecd85594a32953a89f3e",
+    "provenance/pico_v2/ism330dlc/ism330dlc_config.h": "0668d233f9c2a0eaa5587c633738eaab754c05a2862adddc138ea9cf1264fd77",
+    "provenance/pico_v2/replay": "a099c3ff650828f29b1eb563133f67df81778e563c37c41562b9330a7582b848",
+    "provenance/pico_v2/replay.c": "be5bb44956c1554194ba5710569934dcbb5f2c051f32738c9977397b614d363f",
+    "provenance/pico_v2/settings/settings.c": "b838f746d721766f8058ff1a4c1d6dd3feeb4b15e84d34bc69e027cc869ee2b4",
+    "recordings/20260907_183614_slew/control.npz": "65fa644a1762635c24cade5b9bdabf24bbfd96433ca47201cec487ae399f1363",
+    "recordings/20260907_183614_slew/imu.npz": "79d445a3712b92ba0beb11037ed60a80a90c84f0fa700507440d610ce1e0a29c",
+    "recordings/20260907_183614_slew/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_183614_slew/recording.json": "80669824653828d4af356f3cb8ada78201dd757cb3654b6f06cc8e7355928031",
+    "recordings/20260907_185343/control.npz": "1437c11610bdacbf146addb127a93b2bf6e4040b38872bf13c827d807fe126ef",
+    "recordings/20260907_185343/imu.npz": "0ed95a1753ed00ec07ac3593303e0530eaff9c8633d46f2b05516dee20d1522a",
+    "recordings/20260907_185343/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_185343/recording.json": "a13a83c268e5171baf177e6caaf2f81f2e76ac0cd7a0ebdc159668d39141a862",
+    "recordings/20260907_190750/control.npz": "88c5969cf446d86312535f2dfa739b7003a0d0158f13aeb5e2bfc119b2fa4fb8",
+    "recordings/20260907_190750/imu.npz": "4a3eb11650799832da60367a26346548f8f1a14c57152aed904476798d968118",
+    "recordings/20260907_190750/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_190750/recording.json": "a509306f9e92c493018fdbad29c82c7384d2a22e3f84648d25e0e54edc3f5d34",
+    "recordings/20260907_192154/control.npz": "b74051829b94edb4c8a2050dec159a5d401a7f0cc85c078afa12a11c8d605aad",
+    "recordings/20260907_192154/imu.npz": "f581b7fda4a0578c42f51bafd2e7af3b16ba63a643936e8d4ba017973c0e62e2",
+    "recordings/20260907_192154/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_192154/recording.json": "bea756dd71a0642b91d0203e12c5fffd5ee5e1f7e43aa58d49b9fc1f08922e6b",
+    "recordings/20260907_193458/control.npz": "95a951d9304ba7a69101519ecf738384dd7bfcf233883d4c8f757ef17fc067a6",
+    "recordings/20260907_193458/imu.npz": "0144e31b110fda59b1fe08a872bd193ab5419228dc4f2f016309a103c57e3901",
+    "recordings/20260907_193458/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_193458/recording.json": "2dfedf5bcc3e25896d2e1d24088284bc3694f7a6c310b0b70fb3dea348100dcd",
+    "recordings/20260907_194830/control.npz": "288c03703dde3488ed0ffa15954f029bc13f37f03a68062a6849c79ca68d2b76",
+    "recordings/20260907_194830/imu.npz": "ac2966749ea942f7a9fc677081c22155b372473172492601c43c8880defc2841",
+    "recordings/20260907_194830/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_194830/recording.json": "00fa4d51dc594f4ad9c770f2d45da64b8de97ef7090565c1766aa719ee84c744",
+    "recordings/20260907_200221/control.npz": "6ac81600396acb74639a4bc51da25e06e15abe0a955675f43dd1771a7a4ccba5",
+    "recordings/20260907_200221/imu.npz": "849e6777345bc6db8c77b036ab2053e17ab19cd14bc56044284cf14b408a40b6",
+    "recordings/20260907_200221/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_200221/recording.json": "65724b12b21d64866be240231d606fabea6e685922bf06579d5e382151bb2c58",
+    "recordings/20260907_201628/control.npz": "6430d3ac25475189eb7aeadac7c6d936501e3779a118a8c490129f59ebba9221",
+    "recordings/20260907_201628/imu.npz": "bab84c2a9444e7ee5d079b21d4ab4e146bc6a5446e0a3348eefec3465ac65a6b",
+    "recordings/20260907_201628/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_201628/recording.json": "3f7d05e3d10fba3a0a3881896bf596b3125ba5d795315fa76bb1aa1fc0e79a33",
+    "recordings/20260907_202907/control.npz": "68a9852ad96743ec7132334163953daa46a49f6672ab49a8842ff6d3885630c4",
+    "recordings/20260907_202907/imu.npz": "3e362a9005b0f8df72fe0ad95ea7a4192338efed7bfa1f87f9e5c7e1fb0ee575",
+    "recordings/20260907_202907/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_202907/recording.json": "01d1df5c4e28697c796366abb7e2f69afd345d44ca61f33c98185fc980c61727",
+    "recordings/20260907_203936/control.npz": "760b28af90bef6e24a4c01d0ffadc64849792ead708efd1a9316e66ff6ba17a2",
+    "recordings/20260907_203936/imu.npz": "4e1c3fc8b17cbbfdc5364d4434981a0b314eb7631f5eb7d2de9c15d7bb47fd72",
+    "recordings/20260907_203936/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_203936/recording.json": "c6ae827efda8c0173e7f41a61c068d03343f3ba45b4f16f588ed6ebabd4b1472",
+    "recordings/20260907_205234_validation/control.npz": "ccb62763e5afa2371036652355428943efaec44cebd4022e9caa26dd9b149552",
+    "recordings/20260907_205234_validation/imu.npz": "be29d438377ee27e54b928cc60980591b753ceaf423e6a719bc8c148e0e8c28b",
+    "recordings/20260907_205234_validation/note.md": "1475947d0675e6a1e5d6a5b56ff7b6e27575cad6c6c776360fad442c8abd8212",
+    "recordings/20260907_205234_validation/recording.json": "779df9a59512f7713f7c9b180b056458ae244d822e1f07e7adf2504ee421f006",
+    "recordings/20260909_213516_v2_imu_update/control.npz": "6a6495d042e1d85e290ff85f8920119520e9e700e113b6b9b3650741fa0d64d1",
+    "recordings/20260909_213516_v2_imu_update/imu.npz": "b66caa7ffa8ca6858d79e84d5a8b205ca424d7a9cb2a1d3980a8d41fa89b681a",
+    "recordings/20260909_213516_v2_imu_update/note.md": "cb2b2df32357a0ed19ec7088a4af968f4998edfbe244723c7f9a5c00b7e10af7",
+    "recordings/20260909_213516_v2_imu_update/recording.json": "ee14aa79397bc0b7d570f1ec99be82bdbc5c6e34993151d30702fff10a5bae08",
+    "recordings/20260909_220038_v2_imu_update/control.npz": "f723024249c1424c7a046f9bc9290954e904023902528b4206f8885209fa00b1",
+    "recordings/20260909_220038_v2_imu_update/imu.npz": "1cbd5b4e43ccb64518d50a2c5f7fefc91515cdc23c280709665612f33b82a14f",
+    "recordings/20260909_220038_v2_imu_update/note.md": "cb2b2df32357a0ed19ec7088a4af968f4998edfbe244723c7f9a5c00b7e10af7",
+    "recordings/20260909_220038_v2_imu_update/recording.json": "ed2cc5a98e07583e83a3e96780167b812ceb97c9cae816b9dc2fc5c452b39384",
+    "recordings/20260909_221816_v2_imu_update/control.npz": "61f3d8d3288bbe78334d181bac67a709188555a568d51d862970efc031e01609",
+    "recordings/20260909_221816_v2_imu_update/imu.npz": "74ceb842e748e4765b5ca5761ad498d91e110cebb0cbc73a469899806e9b84fe",
+    "recordings/20260909_221816_v2_imu_update/note.md": "cb2b2df32357a0ed19ec7088a4af968f4998edfbe244723c7f9a5c00b7e10af7",
+    "recordings/20260909_221816_v2_imu_update/recording.json": "69db77da12f7df9305e14f90c57efd1a66bfe14be6a89d374ad856a3f3c1a64c",
+    "recordings/20260909_222958_v2_imu_update/control.npz": "d6163388b89e3f16d990a639f0c11c9624584b4fb0303ef65922356ba407c790",
+    "recordings/20260909_222958_v2_imu_update/imu.npz": "14085cd5014413a85e87a6aefb0a5cfb8f024a14813665a817ca89c174917b5b",
+    "recordings/20260909_222958_v2_imu_update/note.md": "cb2b2df32357a0ed19ec7088a4af968f4998edfbe244723c7f9a5c00b7e10af7",
+    "recordings/20260909_222958_v2_imu_update/recording.json": "33f558dcffd493facc06f4438f86c672eeac5b54100230a0b61593f600613d7a",
+    "recordings/20260911_172712_v2_imu_update/control.npz": "9ade426c9caddb6f2b1b2aa39a0b994bc7dbf745bda1a6d432dcabe11a1eb8ca",
+    "recordings/20260911_172712_v2_imu_update/excitation_20260911_172712_v2_imu_update.json": "c68bec419b90a71f27ecef5aaec77fe6aea66d159132f46290c897e245870fd8",
+    "recordings/20260911_172712_v2_imu_update/imu.npz": "a3e34a961182f081e1e7c32cbc3f9bf3b6e83e1989a9ca3bec7677f7c20d7f75",
+    "recordings/20260911_172712_v2_imu_update/note.md": "cb2b2df32357a0ed19ec7088a4af968f4998edfbe244723c7f9a5c00b7e10af7",
+    "recordings/20260911_172712_v2_imu_update/recording.json": "77498b3251a2c503327a3d9e0e83dbcd3c23add030416ffe3095c16c80086765",
+    "recordings/20260911_174252_v2_imu_update/control.npz": "004844559707b257b64596b80b5cab67be11a6c0532176625d726bedceac8c30",
+    "recordings/20260911_174252_v2_imu_update/excitation_20260911_174252_v2_imu_update.json": "d0a2b73eec233b5c7cf15182b5107391c71fd4351cf7c0ec8726e520cf4138b7",
+    "recordings/20260911_174252_v2_imu_update/imu.npz": "4747ea6ab38bdc29b0013c0154afb69230fc65c71b55066bc4f9c155cf677815",
+    "recordings/20260911_174252_v2_imu_update/note.md": "cb2b2df32357a0ed19ec7088a4af968f4998edfbe244723c7f9a5c00b7e10af7",
+    "recordings/20260911_174252_v2_imu_update/recording.json": "ab2062b6a9c6fe53ec166ece1cc2ed74de28b8169c4c49bffc6b813070f0ae49",
+    "recordings/20260911_175326_v2_imu_update/control.npz": "47e8d80819a9ff959d29ae39e79cca57b77840579772c130fca07e5827dface2",
+    "recordings/20260911_175326_v2_imu_update/excitation_20260911_175326_v2_imu_update.json": "69aff67f7f5787abec72e1abd972d4773768dcee7edce64d3c4c2436cecb22b5",
+    "recordings/20260911_175326_v2_imu_update/imu.npz": "e13049a9e1feca6a46c7bb9b2eda3275562d4bd75056fd03322b57a1866a447b",
+    "recordings/20260911_175326_v2_imu_update/note.md": "cb2b2df32357a0ed19ec7088a4af968f4998edfbe244723c7f9a5c00b7e10af7",
+    "recordings/20260911_175326_v2_imu_update/recording.json": "352724b55149979be1dc3239ab01fd44d14dce4b40cc1f4ab49007433648e9b2",
+    "recordings/20260911_180354_v2_imu_update/control.npz": "ce167fdc5f77288ac53acbd9f7df14090725cbf5f97c1f15c320bca4c049f2cf",
+    "recordings/20260911_180354_v2_imu_update/excitation_20260911_180354_v2_imu_update.json": "81f5f0d154fc8b585aec3deeca6209d5b315ada9317d37d646e6cd496e2d62f3",
+    "recordings/20260911_180354_v2_imu_update/imu.npz": "97efc6ae3fb805eccff3336348a698619ed3f6636f2e726158b96065c21833e2",
+    "recordings/20260911_180354_v2_imu_update/note.md": "cb2b2df32357a0ed19ec7088a4af968f4998edfbe244723c7f9a5c00b7e10af7",
+    "recordings/20260911_180354_v2_imu_update/recording.json": "c5785a845c8ae7a353b441af1903beeca5a4393419e271864cb610fe7ced0648",
+    "recordings/20260911_183333_v2_imu_update/control.npz": "f0c79aedc2524e2a8851c9571c82ba8a91f1640b70a9126a43172ff364fa07e8",
+    "recordings/20260911_183333_v2_imu_update/excitation_20260911_183333_v2_imu_update.json": "a7da1a3684ed8e3938c6df400711866f7db712490daa9f464373c14330d7cef1",
+    "recordings/20260911_183333_v2_imu_update/imu.npz": "ca3f8910c44b8c544c901d859f8258eb0ee89754e24202c78549a2537793787f",
+    "recordings/20260911_183333_v2_imu_update/recording.json": "2c73899a9e1a8a4e3249ef742c8d003a20f32d9e393ac9a1ffe3dc062ecdee17",
+    "recordings/20260911_183937_v2_imu_update/control.npz": "d91a70a8397fc1afc7fc5d9b7f69fe23efbdea74df42e70ce03a4e0f0e011f43",
+    "recordings/20260911_183937_v2_imu_update/excitation_20260911_183937_v2_imu_update.json": "982618219600cd81a07b3fd08911339fb55d6b72c3fd38e629ab4f9a230c5c4d",
+    "recordings/20260911_183937_v2_imu_update/imu.npz": "819d86b166d14b2a8087be6e06c959cd980a982739c5e0c530436c23c693223f",
+    "recordings/20260911_183937_v2_imu_update/recording.json": "94fdb9bc9a5ce9758cd801805bc732872a0490788c5a1a0bf05850ea02b51497",
+    "recordings/20260911_184410_v2_imu_update/control.npz": "d8606ca6e9c83ce8c3aeb8eaa3f50a056705e88cd0a44a687c985e9bcdbb41ed",
+    "recordings/20260911_184410_v2_imu_update/excitation_20260911_184410_v2_imu_update.json": "e220e4317a86fe79098fdafe0912c8e17865a2682ae290165f63ec8af3a19f1a",
+    "recordings/20260911_184410_v2_imu_update/imu.npz": "81a68cfe4380c6865831572416b27998e4c6b4d5d9a95ea82629242eecf36f02",
+    "recordings/20260911_184410_v2_imu_update/recording.json": "8885c18ae7dd8fbc49a50a4d70e41f724b1001a6a923e5d0cf18cbafbcd31f9c",
+    "training/unsplit/20260907_183614_slew_000.npz": "e04c6c5f72401c9614d4a1a31fb3af1e57904d23759c4eb9b911f73d32fad481",
+    "training/unsplit/20260907_183614_slew_001.npz": "623a34c388f10523d3e3c46b589e79ffc933fb850e3719b0d8f19cd28df881d4",
+    "training/unsplit/20260907_185343_000.npz": "9f6bc991a0dcce774b4b6ad2d14caa16c54aefef5f95393da9990810965014e3",
+    "training/unsplit/20260907_185343_001.npz": "14d3723364ae1a9e02c721e9f4a73b58467aff6b67fd81d8b29006e3be0505c9",
+    "training/unsplit/20260907_185343_002.npz": "1b9d75678bbf76e1017633e99263499f17770c7586cd1291437cb9079f5b02c3",
+    "training/unsplit/20260907_190750_000.npz": "a4470b54e563e86829beca354f09e5e815ff8278198b5a42f9caee9f917da48b",
+    "training/unsplit/20260907_190750_001.npz": "13531e4643f8f112667d461813eb10c54075b2072b07f4eb9e4ea9625d684e9f",
+    "training/unsplit/20260907_192154_000.npz": "9b11186b9ed4139a8806e0cf25bc11460a94ad7a05de9c98c8c5c83426e46e41",
+    "training/unsplit/20260907_192154_001.npz": "500b1497fccf7b095459470c8edd04fede8fc09a25f4b17aabbd80b95ae6f15d",
+    "training/unsplit/20260907_192154_002.npz": "67435dbaa3dd61f72b8e6491608632635c78817f4d847e4e742b8d51ad4a70dc",
+    "training/unsplit/20260907_193458_000.npz": "1d305d026a61a6c3dc2be60b3fed239b7514e7716eacfc183c222a6745514b41",
+    "training/unsplit/20260907_193458_001.npz": "613ff5818e3149dd9183751f3ece563603df4538c1921ce4daff48f1cc2b2206",
+    "training/unsplit/20260907_194830_000.npz": "d8a43cf01ac4a2cf110fa1b50e35a4456d894df2d2e251f0bc613b7bd1ea34d8",
+    "training/unsplit/20260907_194830_001.npz": "a6a15d9f9b8fa1babd9a6d0534d1e4569ef517b93609b9c58c46fb7f0c3bd0c9",
+    "training/unsplit/20260907_200221_000.npz": "9d2de53d1aeee5e73ad4058af7a415e91118b8e11febbf97e8f4d9f691ddfb25",
+    "training/unsplit/20260907_200221_001.npz": "10d67fc4f4ab6363534eb86045e9181ccda39f6e3d8f969a5ab2311bd6aa2f4d",
+    "training/unsplit/20260907_200221_002.npz": "9cd29c1060c2260615fd6aa7c39cddb3f390e732e782751732e87069f1900a53",
+    "training/unsplit/20260907_200221_003.npz": "68f7d8649410d49c7fe3c731ffa513a6edcf6090354760f1e97d5d70975e8c68",
+    "training/unsplit/20260907_201628_000.npz": "ca0133c6333527829443a1d0469a4d2cb758618c2e4b062fec97ce0549c62436",
+    "training/unsplit/20260907_201628_001.npz": "35b47b9f13ec9cf16655de64c428bf8c6af8ec61114a626147b0f033ef5b56ea",
+    "training/unsplit/20260907_202907_000.npz": "869f1d92fbe344e897f8d2fd53d21e6653213f9e109019a4ca15e888dfbcd9d0",
+    "training/unsplit/20260907_202907_001.npz": "3773453348d36a4de98e9665289d2047056028c01fc2fa20e4c10122669dd223",
+    "training/unsplit/20260907_203936_000.npz": "1ffc3d21d846e0700a35dc94e00dd723923c958c70dc9b2d9e34b6a75f54797a",
+    "training/unsplit/20260907_203936_001.npz": "63c83cc86d8d656678cdd0803717182ce3e5e89ee8b3a40f7787311a88c48113",
+    "training/unsplit/20260907_203936_002.npz": "50be88560775f506cdfdb6c38d35c6b29e1168ec08b5b11a71f8d7f42ac38436",
+    "training/unsplit/20260907_205234_validation_000.npz": "6d97a5f401b3e0b3ae958f4c328174bd66eeec8e541817ac46b77d58d6826581",
+    "training/unsplit/20260907_205234_validation_001.npz": "9dd729275fce2a320323de06ab8b105e348fd5579ac8eb92ca5e2915de03b0b7",
+    "training/unsplit/20260909_213516_v2_imu_update_000.npz": "96fec78e3b1cb36ce075f15a33b16a986f640e5d62121c8e3e04e033473c14cd",
+    "training/unsplit/20260909_213516_v2_imu_update_001.npz": "1714ec85db1b096d7def1ea890e9c5c264d52b0cc410bf547fa5a5b4365cbb8d",
+    "training/unsplit/20260909_220038_v2_imu_update_000.npz": "e949c2890a78362a9aecb51e926880220203698e702bad85549cca979560c8a4",
+    "training/unsplit/20260909_220038_v2_imu_update_001.npz": "1ad59c51b94a56d5e2610ed8bcf004be563c94839eed88d8a0ec1b37d930c1b6",
+    "training/unsplit/20260909_221816_v2_imu_update_000.npz": "e73007ea1964ab667b8a0e595fab22dbff225950b85521337ee6598e63aae54e",
+    "training/unsplit/20260909_221816_v2_imu_update_001.npz": "68f4c8bc5303f3662cbe3b07bbf842bf9349b3aa2bc02be68e58dd4c28932e35",
+    "training/unsplit/20260909_222958_v2_imu_update_000.npz": "280e4a69ee2e1f8b0bc201f81e07aaff7600e6d32dfd40ba5275eda48fa000a0",
+    "training/unsplit/20260909_222958_v2_imu_update_001.npz": "5bf4320473b27628ac5895ee417b6aeed31e92ce9c894dadfeb0851d1ab6f526",
+    "training/unsplit/20260911_172712_v2_imu_update_000.npz": "b8317213af26d890caa27782a6d3355997ad4e9cce6e0ad1b9f14a21fb46d947",
+    "training/unsplit/20260911_172712_v2_imu_update_001.npz": "ec2befc4149448792e0354cafeb349f6889817e09bfd8eb3c1c1424c78a46ed8",
+    "training/unsplit/20260911_174252_v2_imu_update_000.npz": "2af92a6feb3c7c551e4fa22807f5458de7454ae062e9165552e07eeccd029970",
+    "training/unsplit/20260911_174252_v2_imu_update_001.npz": "5d01f9733326a6cc0922adbab8604ff23357a99db128ab26724579eb2bb6d6b4",
+    "training/unsplit/20260911_175326_v2_imu_update_000.npz": "2617814f309998d052eb90bd8d239ab0fa517695a2b2f9b209832913c5481c2b",
+    "training/unsplit/20260911_175326_v2_imu_update_001.npz": "ace34958e2c09c2cc5e6d72260c1e698227233a508ac8161122b2435403319fe",
+    "training/unsplit/20260911_180354_v2_imu_update_000.npz": "c287d01106ecfe87ad8871c8a9d8c59fa70215dbcfb7dddaa4d7fdfb08556387",
+    "training/unsplit/20260911_180354_v2_imu_update_001.npz": "6e479366d26f1040abd08a38f3e8dee762f2debdf4c7d38ec6c2c20166a7afc0",
+    "training/unsplit/20260911_180354_v2_imu_update_002.npz": "6bff34e55da034e2bf566e8f14852e89a2361a7147dd4a5e51e21b37031db53d",
+    "training/unsplit/20260911_183333_v2_imu_update_000.npz": "4b01c66bfed037d49eac10b0e0f4a65f4c879f901c82144c9f42b491d96805b1",
+    "training/unsplit/20260911_183333_v2_imu_update_001.npz": "cbce70efdb5b4c0f863ca75d8526c4f1b28303f1025db7ab7b1050579210d1dd",
+    "training/unsplit/20260911_183937_v2_imu_update_000.npz": "c28581e5060b8b00b5bc44adf30fed8bb25f570d66052cdd2adfd9afb66dd697",
+    "training/unsplit/20260911_184410_v2_imu_update_000.npz": "04e2079d7c10aed6b1822886d27a6224cbc7246cb0180392889ed8a5a087ebf5",
+    "training/unsplit/20260911_184410_v2_imu_update_001.npz": "6477deb42a37060bb8aae9ad6af996804dfe7320f73e3d713dfa391e9075ae30",
+    "README.md": "e7ae784d3185e38aa823ba0b3100a950e9c8544d15f9d2d8dbf80cfd737f1742",
+    "validation.json": "8e621e7f1d0dc782f53861c10d5f2d44729d0a6080805ed6a29f0f884b6b17db",
+    "provenance/validate_complete_dataset.py": "1e0536d541deeb2aae1a4c09335cc2c211bb03d2e62faf24874789b3d20b6e95",
+    "provenance/test_complete_dataset.py": "f71ba78f9ab79ac2903ae58fbe6dcd5742da0e387bfe085553d5c16e11d231a0",
+    "provenance/inspect_desktop_datasets.py": "2ddd0ea51b939e862539680fba265439ad2153ad873fb72f399558fba935ce9a"
+  },
+  "limitations": [
+    "V1 hardware filtering, clipping and original startup calibration cannot be reconstructed exactly.",
+    "Legacy CSVs do not record pump state; no claim that all rows had pump power.",
+    "USB 200 Hz raw stream omits internal 416 Hz AHRS updates; offline replay is approximate.",
+    "Slew is retained separately; planar training q/v/u describes three cylinders and carriage pitch."
+  ],
+  "summary": {
+    "unique_recordings": 22,
+    "duplicate_recordings_not_repeated": 8,
+    "recorded_minutes": 208.30927542633333,
+    "training_minutes": 197.02933333333334,
+    "raw_frames": 2499376
+  }
+}

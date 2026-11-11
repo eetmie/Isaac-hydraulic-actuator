@@ -1,0 +1,31 @@
+{
+  "repository": {
+    "main.c": "d6b04de9617b8c300cacbbdc0b45ca745a20cfda678835d6aa4615797d7bd8b6",
+    "src/imu_reader/settings/settings.c": "cdbedd9b9e3b981cc9b1edb75ad606075c74a36b85765b56af67707aeeef6ff5",
+    "src/imu_reader/ism330dlc/ism330dlc.c": "f9c3b7acb11cd913470cf442b3720824d6502d1be4e4753727b0f92e3184a681",
+    "src/imu_reader/ism330dlc/ism330dlc_config.h": "0668d233f9c2a0eaa5587c633738eaab754c05a2862adddc138ea9cf1264fd77",
+    "src/imu_reader/Fusion/Fusion/InitFusion.c": "fa6445f219c3107f8e946ca6fc1d12f4eecba7fe0f18f0fd9d0ac7ea389e7163",
+    "src/imu_reader/Fusion/Fusion/FusionAhrs.c": "137a4fb86e79bd9e61f4a68e8ca94eab0c3eec464d87e5240e7c6c25bf251da2",
+    "src/imu_reader/Fusion/Fusion/FusionMath.h": "5caf4b0fdc1f37ea4bfd1f10dc9f654af3ce712d1fb15e903e19855093388fd2"
+  },
+  "nov2_retained_build": {
+    "main.c": "39d4b686f9a8a741d4306475681cbb8077d18985c946d36d9e93e64840d42bcb",
+    "src/imu_reader/settings/settings.c": "cdbedd9b9e3b981cc9b1edb75ad606075c74a36b85765b56af67707aeeef6ff5",
+    "src/imu_reader/ism330dlc/ism330dlc.c": "f9c3b7acb11cd913470cf442b3720824d6502d1be4e4753727b0f92e3184a681",
+    "src/imu_reader/ism330dlc/ism330dlc_config.h": "0668d233f9c2a0eaa5587c633738eaab754c05a2862adddc138ea9cf1264fd77",
+    "src/imu_reader/Fusion/Fusion/InitFusion.c": "fa6445f219c3107f8e946ca6fc1d12f4eecba7fe0f18f0fd9d0ac7ea389e7163",
+    "src/imu_reader/Fusion/Fusion/FusionAhrs.c": "137a4fb86e79bd9e61f4a68e8ca94eab0c3eec464d87e5240e7c6c25bf251da2",
+    "src/imu_reader/Fusion/Fusion/FusionMath.h": "5caf4b0fdc1f37ea4bfd1f10dc9f654af3ce712d1fb15e903e19855093388fd2",
+    "build/main.uf2": "19be220a69bf9cd220e94bb4d4983e91f380582c97a85db7ceb3815b04125d71"
+  },
+  "oct21_retained_build": {
+    "main.c": "d6b04de9617b8c300cacbbdc0b45ca745a20cfda678835d6aa4615797d7bd8b6",
+    "src/imu_reader/settings/settings.c": "2082e1aa58679885b0b679b7cdce321d6364eedc90eed9eb81ea8fa0c14190f8",
+    "src/imu_reader/ism330dlc/ism330dlc.c": "f9c3b7acb11cd913470cf442b3720824d6502d1be4e4753727b0f92e3184a681",
+    "src/imu_reader/ism330dlc/ism330dlc_config.h": "0668d233f9c2a0eaa5587c633738eaab754c05a2862adddc138ea9cf1264fd77",
+    "src/imu_reader/Fusion/Fusion/InitFusion.c": "fa6445f219c3107f8e946ca6fc1d12f4eecba7fe0f18f0fd9d0ac7ea389e7163",
+    "src/imu_reader/Fusion/Fusion/FusionAhrs.c": "137a4fb86e79bd9e61f4a68e8ca94eab0c3eec464d87e5240e7c6c25bf251da2",
+    "src/imu_reader/Fusion/Fusion/FusionMath.h": "5caf4b0fdc1f37ea4bfd1f10dc9f654af3ce712d1fb15e903e19855093388fd2",
+    "build/main.uf2": "1f289a42bf9d31ff6844224272e0573621dd92512eb9057f736638710a66c581"
+  }
+}
