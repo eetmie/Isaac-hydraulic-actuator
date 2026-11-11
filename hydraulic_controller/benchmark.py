@@ -95,8 +95,10 @@ class _Rollout:
         self.command = torch.zeros(self.count, 3, device=starts.device)
         self.intervention = torch.zeros(self.count, device=starts.device)
 
-    def run(self, seconds: float, requested_fn):
-        """Advance; ``requested_fn(t, pose, twist)`` is evaluated at the policy rate. Returns 100 Hz logs."""
+    def run(self, seconds: float, requested_fn, feedforward_fn=None):
+        """Advance; ``requested_fn(t, pose, twist)`` is evaluated at the policy rate. Returns 100 Hz logs.
+
+        ``feedforward_fn(t)`` [N, 3], the stateless feedforward request at time t, feeds lookahead checkpoints."""
         logs = {key: [] for key in ("pose", "twist", "u", "command", "intervention", "q")}
         du, previous = [], self.plant.u_cmd.clone()
         limit = torch.zeros(self.count, dtype=torch.bool, device=self.plant.q.device)
@@ -105,7 +107,12 @@ class _Rollout:
                 pose, twist = self.plant.tip_state()
                 requested = requested_fn(step * self.settings.dt, pose, twist)
                 self.command, self.intervention = self.governor(self.plant.q, self.plant.v, requested)
-                self.plant.begin_action(self.policy(self.plant.observe(self.command)))
+                ahead = None
+                if feedforward_fn is not None:
+                    ahead = self.policy.future(
+                        lambda tick: feedforward_fn(tick * self.settings.dt), step, self.settings.decimation
+                    )
+                self.plant.begin_action(self.policy(self.plant.observe(self.command), ahead))
                 du.append((self.plant.u_cmd - previous).abs())
                 previous = self.plant.u_cmd.clone()
             self.plant.step()
@@ -160,15 +167,29 @@ def run_held(policy, kin, poses, plant_name: str, cfg: BenchmarkConfig, limits: 
         rollout = _Rollout(policy, kin, starts, plant_name)
         requested = torch.zeros(len(starts), 3, device=device)
 
+        def goal(t):
+            return speed if t < cfg.leg_s else (-speed if t < 2 * cfg.leg_s else 0.0)
+
         def reference(t, pose, twist):
-            goal = speed if t < cfg.leg_s else (-speed if t < 2 * cfg.leg_s else 0.0)
             current = (requested[:, :2] * dirs).sum(1)
             step = cfg.linear_accel * policy.settings.policy_dt
-            current = current + (goal - current).clamp(-step, step)
+            current = current + (goal(t) - current).clamp(-step, step)
             requested[:, :2] = current[:, None] * dirs
             return requested.clone()
 
-        logs = rollout.run(2 * cfg.leg_s + cfg.stop_s, reference)
+        def feedforward(t):
+            # The same slew run from rest; the reference's ramps start and end on policy ticks.
+            pdt = policy.settings.policy_dt
+            current = 0.0
+            for i in range(round(t / pdt) + 1):
+                current += max(-cfg.linear_accel * pdt, min(cfg.linear_accel * pdt, goal(i * pdt) - current))
+            out = torch.zeros(len(starts), 3, device=device)
+            out[:, :2] = current * dirs
+            return out
+
+        logs = rollout.run(
+            2 * cfg.leg_s + cfg.stop_s, reference, feedforward if policy.lookahead_steps else None
+        )
         twist = logs["twist"][:, :, :2]
         along = (twist * dirs).sum(-1)
         cross = twist[..., 0] * -dirs[:, 1] + twist[..., 1] * dirs[:, 0]
@@ -248,7 +269,12 @@ def run_trajectories(policy, kin, poses, plant_name: str, cfg: BenchmarkConfig, 
             requested[:, 2] = cfg.kp_angle * wrap_angle(pose0[:, 2] - pose[:, 2])
             return requested
 
-        logs = rollout.run(total, reference)
+        def feedforward(t):
+            out = torch.zeros(len(starts), 3, device=device)
+            out[:, :2] = path(t)[1]
+            return out
+
+        logs = rollout.run(total, reference, feedforward)
         steps = logs["pose"].shape[0]
         times = torch.arange(steps, device=device) * policy.settings.dt
         reference_p = torch.stack([path(float(t))[0] for t in times])

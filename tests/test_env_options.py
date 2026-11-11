@@ -230,8 +230,73 @@ def test_controller_policy_appends_the_pose_priority_slider():
 
     policy = ControllerPolicy.__new__(ControllerPolicy)
     policy.contract = {"observation_dim": 5, "pose_priority": {"default": 1 / 3}}
-    policy.has_pose_priority, policy.pose_priority = True, 0.75
+    policy.has_pose_priority, policy.pose_priority, policy.lookahead_steps = True, 0.75, 0
     policy.inference = lambda x: x
     out = policy(torch.zeros(2, 4))
     assert out.shape == (2, 5) and (out[:, -1] == 0.75).all()
     assert policy(torch.ones(2, 5)).shape == (2, 5)  # already complete: left alone
+
+
+@needs_models
+def test_lookahead_is_the_request_the_environment_will_make():
+    pytest.importorskip("rsl_rl")
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    steps, n = 4, 64
+    # Short holds so target switches happen inside the window; long episodes so few envs reset.
+    cfg = HydraulicControlEnvCfg(
+        num_envs=n,
+        device="cpu",
+        seed=5,
+        lookahead_steps=steps,
+        command_hold_s=(0.3, 0.6),
+        episode_length_s=60.0,
+    )
+    env = HydraulicControlEnv(cfg)
+    contract, obs = env.contract(), env.get_observations()
+    assert contract["observation_dim"] == env.plant.contract()["observation_dim"] + 3 * steps
+    assert contract["observation_dim"] == obs["policy"].shape[1] and contract["lookahead"]["steps"] == steps
+    switched = False
+    for _ in range(10):
+        start, ahead = env.requested.clone(), env._lookahead()
+        torch.testing.assert_close(obs["policy"][:, -3 * steps :], ahead.flatten(1))
+        kept = torch.ones(n, dtype=torch.bool)
+        for j in range(steps):
+            before = env.target.clone()
+            obs, _, dones, _ = env.step(torch.zeros(n, 3))
+            switched |= bool(((env.target != before).any(1) & ~dones.bool()).any())
+            kept &= ~dones.bool()
+            torch.testing.assert_close(env.requested[kept], start[kept] + ahead[kept, j])
+    assert switched
+
+
+@needs_models
+def test_acceleration_tracking_only_raises_the_reward():
+    pytest.importorskip("rsl_rl")
+    from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
+
+    rewards = {}
+    for weight in (0.0, 0.4):
+        env = HydraulicControlEnv(
+            HydraulicControlEnvCfg(num_envs=64, device="cpu", seed=3, accel_weight=weight)
+        )
+        generator = torch.Generator().manual_seed(1)
+        rewards[weight] = torch.stack(
+            [env.step(3 * torch.randn(64, 3, generator=generator))[1] for _ in range(6)]
+        )
+    assert (rewards[0.4] >= rewards[0.0] - 1e-6).all()
+    assert (rewards[0.4] > rewards[0.0] + 1e-4).any()
+
+
+def test_controller_policy_holds_the_request_without_lookahead():
+    from hydraulic_controller.policy import ControllerPolicy
+
+    policy = ControllerPolicy.__new__(ControllerPolicy)
+    policy.contract = {"observation_dim": 4 + 2 * 3}
+    policy.has_pose_priority, policy.lookahead_steps = False, 2
+    policy.inference = lambda x: x
+    out = policy(torch.ones(2, 4))
+    assert out.shape == (2, 10) and (out[:, 4:] == 0).all()
+    ahead = policy.future(lambda tick: torch.full((2, 3), float(tick)), 10, 5)
+    torch.testing.assert_close(ahead, torch.tensor([5.0, 10.0])[None, :, None].expand(2, 2, 3))
+    torch.testing.assert_close(policy(torch.ones(2, 4), ahead)[:, 4:], ahead.flatten(1))

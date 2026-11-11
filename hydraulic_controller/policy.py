@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -54,6 +55,8 @@ class ControllerPolicy:
         # Pose-priority slider [0, 1] for checkpoints trained with one (see HydraulicControlEnvCfg.pose_priority).
         self.has_pose_priority = "pose_priority" in self.contract
         self.pose_priority = self.contract["pose_priority"]["default"] if self.has_pose_priority else None
+        # Reference lookahead steps (HydraulicControlEnvCfg.lookahead_steps); 0 for checkpoints without it.
+        self.lookahead_steps = self.contract.get("lookahead", {}).get("steps", 0)
 
     def governor(self, kinematics, speed_margin: float | None = None):
         """Command governor, configured as during training unless ``speed_margin`` overrides it.
@@ -88,15 +91,30 @@ class ControllerPolicy:
         )
 
     @torch.no_grad()
-    def __call__(self, observations: torch.Tensor) -> torch.Tensor:
+    def __call__(self, observations: torch.Tensor, lookahead: torch.Tensor | None = None) -> torch.Tensor:
         """Return deterministic raw actions; the shared plant applies tanh once.
 
         For a pose-priority checkpoint, observations without the slider column get :attr:`pose_priority` appended.
+        For a lookahead checkpoint, ``lookahead`` [N, steps, 3] is the requested twist change over the next policy
+        steps; without it the request is assumed to hold (zeros). Checkpoints without lookahead ignore it.
         """
-        if self.has_pose_priority and observations.shape[1] == self.contract["observation_dim"] - 1:
+        base = self.contract["observation_dim"] - 3 * self.lookahead_steps
+        if self.has_pose_priority and observations.shape[1] == base - 1:
             slider = torch.full_like(observations[:, :1], float(self.pose_priority))
             observations = torch.cat((observations, slider), dim=1)
+        if self.lookahead_steps:
+            if lookahead is None:
+                lookahead = observations.new_zeros(len(observations), self.lookahead_steps, 3)
+            observations = torch.cat((observations, lookahead.flatten(1)), dim=1)
         return self.inference(observations)
+
+    def future(self, ff: Callable[[int], torch.Tensor], k: int, stride: int) -> torch.Tensor | None:
+        """Lookahead from a feedforward reference ``ff(tick)`` [N, 3]: ff at ticks k+stride..k+steps*stride minus
+        ff at k. ``None`` for checkpoints without lookahead."""
+        if not self.lookahead_steps:
+            return None
+        now = ff(k)
+        return torch.stack([ff(k + j * stride) - now for j in range(1, self.lookahead_steps + 1)], dim=1)
 
     def export(self, directory: str | Path | None = None) -> Path:
         """Export actor and normalization; output actions require the documented tanh."""
@@ -166,5 +184,7 @@ class PolicyController:
             requested[:, :2] = self.v_ref[k, :, :2] + self.kp * (reference[:, :2] - pose[:, :2])
             requested[:, 2] = self.kp_angle * wrap_angle(reference[:, 2] - pose[:, 2])
             command, _ = self.governor(q, v, requested)
-            self.u = torch.tanh(self.policy(self.history.observe(task.kin, command, self.point)))
+            last = len(self.v_ref) - 1
+            ahead = self.policy.future(lambda tick: self.v_ref[min(tick, last)], k, self.decimation)
+            self.u = torch.tanh(self.policy(self.history.observe(task.kin, command, self.point), ahead))
         return self.u

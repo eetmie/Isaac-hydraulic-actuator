@@ -45,6 +45,8 @@ def export_bundle(policy, directory: Path, profile_dir: Path, cases: int = 64):
         raise ValueError("The robot runtime sends bucket-tip requests; export a tip-tracking policy")
     if "pose_priority" in policy.contract:
         raise ValueError("The robot runtime does not send the pose-priority slider yet")
+    if "lookahead" in policy.contract:
+        raise ValueError("The robot runtime does not send reference lookahead yet")
     config = yaml.safe_load((profile_dir / "control_config.yaml").read_text())
     geometry = ExcavatorKinematics(policy.asset_path, "cpu")
     geometry.build_collision_grid()
