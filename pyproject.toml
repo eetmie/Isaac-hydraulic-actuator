@@ -1,7 +1,7 @@
 [tool.ruff]
 line-length = 110
 target-version = "py311"
-extend-exclude = ["local"]
+extend-exclude = ["local", "training/dataset_build"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
