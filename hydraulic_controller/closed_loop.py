@@ -47,9 +47,9 @@ class TaskBatch:
         return len(self.q0)
 
     def tip_velocity(self) -> torch.Tensor:
-        """Reference tip twist [T, N, 3] by backward difference (zero before the first tick)."""
+        """Reference EE twist by backward difference, wrapping angular differences at +/-pi."""
         diff = torch.diff(self.tip_ref, dim=0, prepend=self.tip_ref[:1]) / self.dt
-        diff[..., 2] = 0.0  # the bucket angle is held
+        diff[..., 2] = wrap_angle(diff[..., 2] * self.dt) / self.dt
         return torch.nan_to_num(diff)
 
 

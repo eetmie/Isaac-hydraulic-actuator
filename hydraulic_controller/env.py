@@ -1,8 +1,9 @@
-"""Vectorized PPO environment: learned hydraulics, planar tip-velocity tracking, no physics engine.
+"""Vectorized PPO environment: learned hydraulics, planar pivot-velocity tracking, no physics engine.
 
 The frozen actuator network *is* the plant, so training needs neither PhysX nor rendering. Isaac Sim is only used
 to visualize a trained policy (see ``run_controller.py``). The task follows Egli & Hutter (RA-L 2022): the policy
-receives a desired tip twist and outputs pilot valve commands directly.
+receives a desired bucket-pivot twist and outputs pilot valve commands directly. External bucket-edge requests
+are converted to pivot commands by the runtime before reaching the policy.
 """
 
 from __future__ import annotations
@@ -83,7 +84,7 @@ class HydraulicControlEnvCfg:
     termination_penalty: float = 10.0
     # Pose-priority slider (opt-in). Each episode draws w in [0, 1], appended to the policy and critic
     # observations; the angular terms then weigh w * pose_angular_weight_max and w * pose_angular_error_weight_max
-    # instead of angular_weight and angular_error_weight. w = 0 tracks the tip position only, w = 1 weighs bucket
+    # instead of angular_weight and angular_error_weight. w = 0 tracks position only, w = 1 weighs bucket
     # rotation like position (the linear terms sum to 1 + track_fine_weight). The default maxima make w = 1/3
     # reproduce angular_weight = angular_error_weight = 0.5.
     pose_priority: bool = False
@@ -95,7 +96,7 @@ class HydraulicControlEnvCfg:
     carriage_rate_weight: float = 0.0
     carriage_rate_scale: float = 0.02
     # Acceleration tracking (Nan & Hutter, RA-L 2024, eq. 7), per 0.05 s: weight * exp(-|a_err|^2 / sigma^2),
-    # a_err [m/s^2] = (tip XZ twist change - command change) per policy step. Penalizes lag at starts and stops.
+    # a_err [m/s^2] = (tracked XZ twist change - command change) per policy step. Penalizes lag at starts and stops.
     accel_weight: float = 0.0
     accel_sigma: float = 0.1
     # Reference lookahead (Nan & Hutter 2024): the policy and critic also see the requested twist change over the
@@ -103,9 +104,9 @@ class HydraulicControlEnvCfg:
     # Runners without a known future (gamepad, draw, robot) get zeros, i.e. "hold the current request".
     lookahead_steps: int = 0
 
-    # Tracked point: "tip" (bucket tip) or "pivot" (bucket joint). With "pivot" the bucket joint only turns the
-    # bucket; tip requests are converted outside the policy (``policy.PolicyController``).
-    tracked_point: str = "tip"
+    # Learn linear velocity at the bucket pivot to decouple it from bucket rotation. Runtime callers still
+    # request bucket-edge motion. "tip" is retained for historical checkpoints and controlled comparisons.
+    tracked_point: str = "pivot"
     # Episodes that start mid-motion: this share of resets continues a state from a pool driven for
     # motion_start_s by a joint-space P controller toward random poses, so histories and the arm are already
     # moving; the request starts at that motion and slews to the new target. The pool is redriven every
@@ -213,7 +214,7 @@ class HydraulicControlEnv(VecEnv):
         self._noise = self._noise_scale() if cfg.randomize else None
         self._reset_idx(torch.arange(n, device=self.device))
         self._update_command(resample=False)
-        self._last_twist = self.plant.tip_state()[1]
+        self._last_twist = self.plant.tracking_state()[1]
         self._last_command = self.command.clone()
         self._obs = self._compute_observations()
 
@@ -245,7 +246,7 @@ class HydraulicControlEnv(VecEnv):
                 "default": 1 / 3,
                 "angular_weight_max": self.cfg.pose_angular_weight_max,
                 "angular_error_weight_max": self.cfg.pose_angular_error_weight_max,
-                "meaning": "0 tracks tip position only, 1 weighs bucket rotation like position",
+                "meaning": f"0 tracks {self.cfg.tracked_point} position only, 1 weighs bucket rotation like position",
             }
         if self.cfg.lookahead_steps:
             contract["observation_dim"] += 3 * self.cfg.lookahead_steps
@@ -280,7 +281,7 @@ class HydraulicControlEnv(VecEnv):
             plant.step()
             if self.sensors is not None:
                 self.sensors.step()
-            _, twist = plant.tip_state()
+            _, twist = plant.tracking_state()
             error = twist - self.command
             e2 = error[:, :2].square().sum(1)
             track += torch.exp(-e2 / sigma**2) + cfg.track_fine_weight * torch.exp(
@@ -352,7 +353,7 @@ class HydraulicControlEnv(VecEnv):
             self._reset_idx(done_ids)
         self._update_command(resample=True)
         # After resets, so a new episode's first acceleration is measured from its own start.
-        self._last_twist = plant.tip_state()[1]
+        self._last_twist = plant.tracking_state()[1]
         self._last_command = self.command.clone()
         self._obs = self._compute_observations()
         self.common_step_counter += 1
@@ -454,7 +455,7 @@ class HydraulicControlEnv(VecEnv):
         self.requested[ids] = 0
         if len(moving):
             # The request starts at the motion already under way (a stale command), then slews to the new target.
-            _, twist = self.plant.tip_state()
+            _, twist = self.plant.tracking_state()
             twist = twist[moving]
             twist[:, :2] *= (
                 cfg.speed_max / twist[:, :2].norm(dim=1, keepdim=True).clamp_min(1e-9)

@@ -215,6 +215,10 @@ class HydraulicPlant:
         extra_models: tuple = (),
         tracked_point: str = "tip",
     ):
+        from .kinematics import TRACKED_POINTS
+
+        if tracked_point not in TRACKED_POINTS:
+            raise ValueError(f"unknown tracked point {tracked_point!r}")
         self.settings = settings or ControllerSettings()
         self.tracked_point = tracked_point
         self.device = device
@@ -317,11 +321,18 @@ class HydraulicPlant:
     def tip_state(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Return tip pose [m, m, rad] and the tip twist [m/s, m/s, rad/s] driven by the three arm joints.
 
-        Carriage pitch is excluded: rocking cannot be controlled through the valves, so it is not tracked. With
-        ``tracked_point="pivot"`` both describe the bucket joint instead of the tip.
+        Carriage pitch is excluded: rocking cannot be controlled through the valves, so it is not tracked.
+        Evaluation and operator interfaces always use the tip, regardless of the policy's tracking point.
         """
-        kin, point = self.kinematics, self.tracked_point
-        pose, jacobian = kin.pose_jacobian(self.q) if point == "tip" else kin.pose_jacobian(self.q, point)
+        pose, jacobian = self.kinematics.pose_jacobian(self.q)
+        twist = torch.einsum("nij,nj->ni", jacobian[:, :, :3], self.v[:, :3])
+        return pose, twist
+
+    def tracking_state(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Pose and arm-driven twist at the policy's internal tracking point, for observations and rewards."""
+        if self.tracked_point == "tip":
+            return self.tip_state()
+        pose, jacobian = self.kinematics.pose_jacobian(self.q, self.tracked_point)
         twist = torch.einsum("nij,nj->ni", jacobian[:, :, :3], self.v[:, :3])
         return pose, twist
 
@@ -364,8 +375,8 @@ class HydraulicPlant:
             "tracked_twist": "arm_joints_only",
             "action_transform": "tanh",
             "observation_dim": self.observe(self.u * 0).shape[1],
-            "observation_fields": OBSERVATION_FIELDS,
-            **({"tracked_point": self.tracked_point} if self.tracked_point != "tip" else {}),
+            "observation_fields": [field.replace("tip", self.tracked_point) for field in OBSERVATION_FIELDS],
+            "tracked_point": self.tracked_point,
         }
 
 

@@ -89,6 +89,46 @@ class SensorSettings:
             raise ValueError("Sensor delay must be an integer in [0, 10]")
 
 
+class SensorController:
+    """Give any closed-loop controller reproducible noisy and delayed state measurements.
+
+    Each benchmark controller gets its own generator with the same seed, so sensor
+    disturbances match by scenario and tick without consuming global random state.
+    """
+
+    def __init__(self, controller, settings: SensorSettings, seed: int = 0):
+        self.controller, self.cfg, self.seed = controller, settings, seed
+
+    def reset(self, task):
+        self.controller.reset(task)
+        q = task.q0
+        self.random = torch.Generator(device=q.device).manual_seed(self.seed)
+        self.bias = (
+            2 * torch.rand(q.shape, generator=self.random, device=q.device) - 1
+        ) * self.cfg.gyro_bias_max
+        self.delay = torch.randint(
+            self.cfg.delay_max_steps + 1, (len(q),), generator=self.random, device=q.device
+        )
+        self.rows = torch.arange(len(q), device=q.device)
+        self.q_queue = q[:, None].expand(-1, self.cfg.delay_max_steps + 1, -1).clone()
+        self.v_queue = torch.zeros_like(self.q_queue)
+
+    @torch.no_grad()
+    def __call__(self, k, q, v):
+        link_error = (
+            self.bias + torch.randn(q.shape, generator=self.random, device=q.device) * self.cfg.gyro_noise_std
+        )
+        relative_error = torch.cat((link_error[:, 1:] - link_error[:, :-1], link_error[:, :1]), 1)
+        for queue, sample in ((self.q_queue, q), (self.v_queue, v + relative_error)):
+            queue[:, 1:] = queue[:, :-1].clone()
+            queue[:, 0] = sample
+        angles = (
+            self.q_queue[self.rows, self.delay]
+            + torch.randn(q.shape, generator=self.random, device=q.device) * self.cfg.angle_noise_std
+        )
+        return self.controller(k, angles, self.v_queue[self.rows, self.delay])
+
+
 class SensorObservation:
     """Persistent per-sample sensor errors, separate from physical plant state and reward."""
 

@@ -1,4 +1,4 @@
-"""Train the hydraulic tip-velocity controller with RSL-RL PPO on the learned actuator plant.
+"""Train the hydraulic pivot-velocity controller with RSL-RL PPO on the learned actuator plant.
 
 No simulator is launched: the frozen actuator MLP is the plant, and thousands of environments run as batched
 Torch on the GPU. From the Isaac Lab root::
@@ -15,12 +15,31 @@ import argparse
 import copy
 import json
 import sys
+import time
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
+
+
+def tracking_point(resume: str | Path | None = None, requested: str | None = None) -> str:
+    """Default new policies to the pivot; resuming must preserve the checkpoint's observation semantics."""
+    from hydraulic_controller.kinematics import TRACKED_POINTS
+
+    saved = None
+    if resume is not None:
+        contract = json.loads((Path(resume).parent / "controller_contract.json").read_text())
+        saved = contract.get("tracked_point", "tip")
+    point = requested if requested is not None else (saved if saved is not None else "pivot")
+    if point not in TRACKED_POINTS:
+        raise ValueError(f"Unknown tracking point: {point!r}")
+    if saved is not None and point != saved:
+        raise ValueError(
+            f"Cannot resume a {saved}-tracking checkpoint with {point} observations; train from scratch"
+        )
+    return point
 
 
 def agent_config(args, policy_hz: int) -> dict:
@@ -62,8 +81,8 @@ def agent_config(args, policy_hz: int) -> dict:
             "class_name": "PPO",
             "num_learning_epochs": 5,
             "num_mini_batches": 4,
-            "learning_rate": 1.0e-3,
-            "schedule": "adaptive",
+            "learning_rate": args.learning_rate,
+            "schedule": args.lr_schedule,
             "gamma": 0.99**time_scale,
             "lam": 0.95**time_scale,
             "entropy_coef": args.entropy_coef,
@@ -86,11 +105,17 @@ def main() -> int:
     parser.add_argument("--run_name", default="controller")
     parser.add_argument("--num_envs", type=int, default=4096)
     parser.add_argument("--max_iterations", type=int, default=1500)
+    parser.add_argument(
+        "--max_seconds", type=float, help="Stop at a saved checkpoint after this training wall time"
+    )
+    parser.add_argument("--log_dir", type=Path, help="Explicit output directory for an unattended run")
     parser.add_argument("--save_interval", type=int, default=100)
     parser.add_argument("--policy_hz", type=int, default=20, help="Policy rate; must divide 100 Hz.")
     parser.add_argument("--rollout_s", type=float, default=1.2, help="PPO rollout length per env [s].")
     parser.add_argument("--curriculum_iterations", type=int, default=300)
     parser.add_argument("--entropy_coef", type=float, default=0.002)
+    parser.add_argument("--learning_rate", type=float, default=1e-3)
+    parser.add_argument("--lr_schedule", choices=("adaptive", "fixed"), default="adaptive")
     parser.add_argument(
         "--init_std", type=float, default=0.5, help="Initial exploration noise std of the valve actions."
     )
@@ -114,6 +139,12 @@ def main() -> int:
         "--set", nargs="*", default=[], metavar="KEY=VALUE", help="Override HydraulicControlEnvCfg fields."
     )
     args = parser.parse_args()
+    if args.learning_rate <= 0:
+        parser.error("--learning_rate must be positive")
+    if args.max_seconds is not None and args.max_seconds <= 0:
+        parser.error("--max_seconds must be positive")
+    if args.save_interval <= 0:
+        parser.error("--save_interval must be positive")
 
     import torch
     import yaml
@@ -143,6 +174,7 @@ def main() -> int:
         policy_hz=args.policy_hz,
         randomize=not args.no_randomize,
         curriculum_steps=args.curriculum_iterations * agent["num_steps_per_env"],
+        tracked_point=tracking_point(args.resume),
     )
     for item in args.set:
         key, _, value = item.partition("=")
@@ -151,12 +183,13 @@ def main() -> int:
         if not hasattr(cfg, key):
             parser.error(f"Unknown environment field: {key}")
         setattr(cfg, key, type(getattr(cfg, key))(yaml.safe_load(value)))
+    cfg.tracked_point = tracking_point(args.resume, cfg.tracked_point)
     if args.model is not None:
         cfg.model_path = str(args.model.resolve())
 
     torch.backends.cuda.matmul.allow_tf32 = True
     env = HydraulicControlEnv(cfg)
-    log_dir = (
+    log_dir = args.log_dir or (
         ROOT / "logs/rsl_rl/hydraulic_controller" / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{args.run_name}"
     )
     (log_dir / "params").mkdir(parents=True, exist_ok=True)
@@ -174,11 +207,39 @@ def main() -> int:
         f"observation {env.get_observations()['policy'].shape[1]}, randomize={cfg.randomize}"
     )
 
-    runner = OnPolicyRunner(env, copy.deepcopy(agent), str(log_dir), device=args.device)
+    class TrainingTimeLimit(Exception):
+        pass
+
+    class BudgetRunner(OnPolicyRunner):
+        def save(self, path, infos=None):
+            super().save(path, infos)
+            if args.max_seconds is not None and time.monotonic() - started >= args.max_seconds:
+                raise TrainingTimeLimit
+
+    runner = BudgetRunner(env, copy.deepcopy(agent), str(log_dir), device=args.device)
     runner.logger.git_status_repos.append(__file__)
     if args.resume:
         runner.load(args.resume)
-    runner.learn(args.max_iterations, init_at_random_ep_len=True)
+    started = time.monotonic()
+    reason = "iterations"
+    try:
+        runner.learn(args.max_iterations, init_at_random_ep_len=True)
+    except TrainingTimeLimit:
+        reason = "time_budget"
+        runner.logger.stop_logging_writer()
+        print("[INFO] Time budget reached; checkpoint and optimizer saved", flush=True)
+    (log_dir / "training_result.json").write_text(
+        json.dumps(
+            {
+                "reason": reason,
+                "iteration": runner.current_learning_iteration,
+                "elapsed_s": time.monotonic() - started,
+                "checkpoint": str((log_dir / f"model_{runner.current_learning_iteration}.pt").resolve()),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     return 0
 
 

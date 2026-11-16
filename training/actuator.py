@@ -209,6 +209,7 @@ def save_candidate(predictor, original, out, step, label, metrics):
 
 def train(args):
     """Train a raw-gyro candidate and compare it to the frozen baseline."""
+    budget_started = time.perf_counter()
     chunks, dev = load_chunks(args.out, "train"), load_chunks(args.out, "dev")
     baseline = evaluate(args.model, dev, args.device, args.cases)
     (args.out / "baseline_dev.json").write_text(json.dumps(baseline, indent=2) + "\n")
@@ -267,7 +268,10 @@ def train(args):
         opt.step()
         if not torch.isfinite(loss):
             raise FloatingPointError(f"{label} training diverged at {step}")
-        if step % args.eval_every == 0 or step == args.steps:
+        budget_expired = (
+            args.max_seconds is not None and time.perf_counter() - budget_started >= args.max_seconds
+        )
+        if step % args.eval_every == 0 or step == args.steps or budget_expired:
             # Save a disposable *candidate artifact*, never overwrite the baseline.
             save_candidate(p, args.model, out / "latest", step, label, {})
             metrics = evaluate(out / "latest", dev, args.device, args.cases)
@@ -287,6 +291,11 @@ def train(args):
             p.net.train()
         elif step % 25 == 0:
             print(json.dumps({"label": label, "step": step, "loss": loss.item()}), flush=True)
+        if budget_expired:
+            print(
+                f"Time budget reached after {step} rollout steps; saved best and latest weights", flush=True
+            )
+            break
     selection["candidates"][label] = json.loads((out / "model_meta.json").read_text())["training"]
     candidate = selection["candidates"][label]["development"]
     # Floors avoid rejecting numerical roundoff around the baseline's exact neutral bound.
@@ -313,6 +322,9 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=731)
     parser.add_argument("--steps", type=int, default=400)
+    parser.add_argument(
+        "--max_seconds", type=float, help="Finish and save after this wall time, including pretraining"
+    )
     parser.add_argument("--horizon", type=int, default=100)
     parser.add_argument("--batch", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-5)
@@ -328,6 +340,8 @@ def main():
     )
     parser.add_argument("--pretrain_lr", type=float, default=1e-3)
     args = parser.parse_args()
+    if args.max_seconds is not None and args.max_seconds <= 0:
+        parser.error("--max_seconds must be positive")
     torch.set_num_threads(2)
     args.out.mkdir(parents=True, exist_ok=True)
     if args.mode == "train":

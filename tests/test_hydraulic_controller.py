@@ -135,17 +135,20 @@ def test_packaged_controller_loads_from_any_clone():
     import json
 
     from hydraulic_controller.policy import ControllerPolicy
+    from run_controller import resolve_checkpoint
 
-    folder = ROOT / "models/controller"
-    manifest = json.loads((folder / "release_manifest.json").read_text())
+    historical = ROOT / "models/controller"
+    manifest = json.loads((historical / "release_manifest.json").read_text())
     for filename, expected in manifest["files"].items():
-        assert hashlib.sha256((folder / filename).read_bytes()).hexdigest() == expected
+        assert hashlib.sha256((historical / filename).read_bytes()).hexdigest() == expected
+    checkpoint = resolve_checkpoint(None)
+    folder = checkpoint.parent
     contract = json.loads((folder / "controller_contract.json").read_text())
     assert not Path(contract["model_path"]).is_absolute()
     assert not Path(contract["asset_path"]).is_absolute()
-    policy = ControllerPolicy(folder / "model_1798.pt")
-    assert policy.model_path == MODEL and policy.asset_path == ASSET
-    actions = policy(torch.zeros(1, contract["observation_dim"]))
+    policy = ControllerPolicy(checkpoint)
+    assert policy.model_path == ROOT / "models/actuator_pivot" and policy.asset_path == ASSET
+    actions = policy(torch.zeros(1, contract["observation_dim"] - 3 * policy.lookahead_steps))
     assert actions.shape == (1, 3) and torch.isfinite(actions).all()
 
 

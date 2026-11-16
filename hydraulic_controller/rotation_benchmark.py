@@ -22,9 +22,9 @@ from .rotation import FixedTipRotation
 
 
 @torch.inference_mode()
-def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None):
+def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None, model_path=None, asset_path=None):
     torch.manual_seed(731)
-    kin = ExcavatorKinematics(policy.asset_path, policy.device)
+    kin = ExcavatorKinematics(asset_path or policy.asset_path, policy.device)
     kin.build_collision_grid()
     robot = kin
     if robot_profile is not None:
@@ -53,7 +53,14 @@ def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None):
         q0 = initial.repeat(len(names), 1)
         n = len(q0)
         for sensor_mode in ("ideal", "gyro"):
-            plant = HydraulicPlant(policy.model_path, kin, n, policy.device, settings)
+            plant = HydraulicPlant(
+                model_path or policy.model_path,
+                kin,
+                n,
+                policy.device,
+                settings,
+                tracked_point=policy.tracked_point,
+            )
             plant.reset(torch.arange(n, device=policy.device), q0)
             for index, name in enumerate(names):
                 section = slice(index * len(initial), (index + 1) * len(initial))
@@ -88,6 +95,7 @@ def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None):
                     ).clamp_max(1)
                     commands[:, 2] = rate + 3 * wrap_angle(initial_pose[:, 2] + delta - observed_pose[:, 2])
                     desired = commands if robot is kin else policy_twist(q, commands, robot, kin)
+                    desired = policy.to_tracking_twist(kin, q, desired)
                     admitted, _ = governor(q, v, desired)
                     observation = (
                         plant.observe(admitted) if sensor_mode == "ideal" else sensors.observe(admitted)
@@ -134,11 +142,15 @@ def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None):
     report = {
         "checkpoint": str(policy.checkpoint),
         "checkpoint_sha256": sha256(policy.checkpoint),
+        "plant_model": str(model_path or policy.model_path),
+        "asset": str(asset_path or policy.asset_path),
+        "tracked_point": policy.tracked_point,
+        "pose_priority": policy.pose_priority if policy.has_pose_priority else None,
         "cycles": cycles,
         "rate_deg_s": 3,
         "rows": rows,
         "robot_profile_sha256": None if robot_profile is None else sha256(Path(robot_profile)),
-        "passed": all(not r["failed"] and r["tip_max_mm"] <= 20 for r in rows),
+        "tip_hold_passed": all(not r["failed"] and r["tip_max_mm"] <= 20 for r in rows),
         "hardware_validated": False,
         "acceptance": "All simulated cases <=20mm max tip error without invalid state/limit/collision",
     }
@@ -156,10 +168,24 @@ def main():
     parser.add_argument("--poses", type=int, default=4)
     parser.add_argument("--cycles", type=int, default=3)
     parser.add_argument("--robot_profile", type=Path)
+    parser.add_argument("--model", type=Path, help="Common evaluation plant instead of the training plant")
+    parser.add_argument("--asset", type=Path, help="Common evaluation geometry instead of the training asset")
+    parser.add_argument("--priority", type=float, help="Preference in [0, 1] for a conditioned checkpoint")
     args = parser.parse_args()
     torch.set_num_threads(2)
+    policy = ControllerPolicy(args.checkpoint, args.device)
+    if args.priority is not None:
+        if not policy.has_pose_priority or not 0 <= args.priority <= 1:
+            parser.error("--priority requires a conditioned checkpoint and a value in [0, 1]")
+        policy.pose_priority = args.priority
     benchmark(
-        ControllerPolicy(args.checkpoint, args.device), args.out, args.poses, args.cycles, args.robot_profile
+        policy,
+        args.out,
+        args.poses,
+        args.cycles,
+        args.robot_profile,
+        args.model,
+        args.asset,
     )
 
 

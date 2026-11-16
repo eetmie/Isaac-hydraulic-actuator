@@ -84,7 +84,14 @@ class _Rollout:
         self.policy, self.kin = policy, kin
         self.settings = policy.settings
         self.count = len(starts)
-        self.plant = HydraulicPlant(policy.model_path, kin, self.count, str(starts.device), self.settings)
+        self.plant = HydraulicPlant(
+            policy.model_path,
+            kin,
+            self.count,
+            str(starts.device),
+            self.settings,
+            tracked_point=policy.tracked_point,
+        )
         self.plant.reset(torch.arange(self.count, device=starts.device), starts)
         perturbation = PLANTS[plant_name]
         self.plant.valve_gain.fill_(perturbation["gain"])
@@ -96,9 +103,11 @@ class _Rollout:
         self.intervention = torch.zeros(self.count, device=starts.device)
 
     def run(self, seconds: float, requested_fn, feedforward_fn=None):
-        """Advance; ``requested_fn(t, pose, twist)`` is evaluated at the policy rate. Returns 100 Hz logs.
+        """Advance; ``requested_fn(t, pose, twist)`` uses the bucket edge and is evaluated at the policy rate.
 
-        ``feedforward_fn(t)`` [N, 3], the stateless feedforward request at time t, feeds lookahead checkpoints."""
+        ``feedforward_fn(t)`` [N, 3] also uses the edge and feeds lookahead checkpoints. Requests are converted
+        before the internal governor; returned 100 Hz pose, twist and command logs always describe the edge.
+        """
         logs = {key: [] for key in ("pose", "twist", "u", "command", "intervention", "q")}
         du, previous = [], self.plant.u_cmd.clone()
         limit = torch.zeros(self.count, dtype=torch.bool, device=self.plant.q.device)
@@ -106,11 +115,16 @@ class _Rollout:
             if step % self.settings.decimation == 0:
                 pose, twist = self.plant.tip_state()
                 requested = requested_fn(step * self.settings.dt, pose, twist)
+                requested = self.policy.to_tracking_twist(self.kin, self.plant.q, requested)
                 self.command, self.intervention = self.governor(self.plant.q, self.plant.v, requested)
                 ahead = None
                 if feedforward_fn is not None:
                     ahead = self.policy.future(
-                        lambda tick: feedforward_fn(tick * self.settings.dt), step, self.settings.decimation
+                        lambda tick: self.policy.to_tracking_twist(
+                            self.kin, self.plant.q, feedforward_fn(tick * self.settings.dt)
+                        ),
+                        step,
+                        self.settings.decimation,
                     )
                 self.plant.begin_action(self.policy(self.plant.observe(self.command), ahead))
                 du.append((self.plant.u_cmd - previous).abs())
@@ -122,7 +136,7 @@ class _Rollout:
                 ("pose", pose),
                 ("twist", twist),
                 ("u", self.plant.u_cmd.clone()),
-                ("command", self.command),
+                ("command", self.policy.to_tip_twist(self.kin, self.plant.q, self.command)),
                 ("intervention", self.intervention),
                 ("q", self.plant.q.clone()),
             ):

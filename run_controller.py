@@ -25,15 +25,14 @@ from pathlib import Path
 
 import numpy as np
 
+from hydraulic_controller import DEFAULT_CHECKPOINT
+
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-# The baseline controller shipped with the repository, so the demo runs on a fresh clone.
-DEFAULT_CHECKPOINT = ROOT / "models/controller/model_1798.pt"
-
 
 def resolve_checkpoint(value: str | None) -> Path:
-    """Resolve an explicit checkpoint, else the shipped baseline controller."""
+    """Resolve an explicit checkpoint, else the packaged pivot controller."""
     path = Path(value).expanduser().resolve() if value else DEFAULT_CHECKPOINT
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -168,7 +167,9 @@ def play(args_cli, checkpoint: Path, policy, sim_cfg) -> None:
             target_marker_cfg.replace(prim_path="/Visuals/HydraulicController/target")
         )
 
-    plant = HydraulicPlant(policy.model_path, kin, 1, args_cli.device, settings)
+    plant = HydraulicPlant(
+        policy.model_path, kin, 1, args_cli.device, settings, tracked_point=policy.tracked_point
+    )
     bridge = HydraulicSceneBridge(sim, robot, plant)
     governor = policy.governor(kin, args_cli.governor_margin)
     home_ids = torch.zeros(1, dtype=torch.long, device=args_cli.device)
@@ -251,7 +252,8 @@ def play(args_cli, checkpoint: Path, policy, sim_cfg) -> None:
                         float(np.linalg.norm(pose[0, :2].detach().cpu().numpy() - session.reference))
                     )
                 requested[0] = torch.as_tensor(command_np, device=args_cli.device)
-                admitted, _ = governor(plant.q, plant.v, requested)
+                tracking_request = policy.to_tracking_twist(kin, plant.q, requested)
+                admitted, _ = governor(plant.q, plant.v, tracking_request)
                 plant.begin_action(policy(plant.observe(admitted)))
                 if target_marker is not None:
                     target_xz = torch.as_tensor(
@@ -310,7 +312,8 @@ def entrypoint() -> int:
 
     parser = argparse.ArgumentParser(description="Hydraulic end-effector velocity controller")
     parser.add_argument(
-        "--checkpoint", help="RSL-RL model_*.pt; default is the packaged baseline in models/controller"
+        "--checkpoint",
+        help="RSL-RL model_*.pt; default is the packaged pivot policy in models/controller_pivot",
     )
     parser.add_argument("--mode", choices=("draw", "circle", "gamepad", "benchmark"), default="draw")
     parser.add_argument(

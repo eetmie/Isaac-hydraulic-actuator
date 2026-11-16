@@ -10,19 +10,19 @@ from hydraulic_controller.core import DEFAULT_ASSET, DEFAULT_MODEL, HydraulicPla
 from hydraulic_controller.tasks import TaskConfig, prepare
 
 ROOT = Path(__file__).resolve().parents[1]
-CHECKPOINT = ROOT / "models/controller/model_1798.pt"
+CHECKPOINT = ROOT / "models/controller_pivot/model_3499.pt"
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 needs_checkpoint = pytest.mark.skipif(
     not (CHECKPOINT.exists() and DEFAULT_MODEL.exists()), reason="baseline controller or plant not installed"
 )
 
 
-def tip_task(**overrides):
+def tip_task(model=DEFAULT_MODEL, asset=DEFAULT_ASSET, **overrides):
     settings = dict(
         families=("tip_line",), plants=("nominal",), tip_speeds_m_s=(0.04,), duration_s=2.0, tail_s=0.5
     )
     cfg = TaskConfig(**{**settings, **overrides})
-    return prepare(cfg, DEFAULT_MODEL, DEFAULT_ASSET, DEVICE)
+    return prepare(cfg, model, asset, DEVICE)
 
 
 @needs_checkpoint
@@ -31,11 +31,13 @@ def test_policy_controller_matches_the_plant_observation_loop():
     from hydraulic_controller.policy import ControllerPolicy, PolicyController
 
     policy = ControllerPolicy(CHECKPOINT, DEVICE)
-    prep = tip_task()
+    prep = tip_task(model=policy.model_path, asset=policy.asset_path)
     _, traces = rollout(prep, PolicyController(policy), record=True)
 
     kin, n = prep.kin, len(prep.scenarios)
-    plant = HydraulicPlant(DEFAULT_MODEL, kin, n, DEVICE, policy.settings)
+    plant = HydraulicPlant(
+        policy.model_path, kin, n, DEVICE, policy.settings, tracked_point=policy.tracked_point
+    )
     plant.reset(torch.arange(n, device=DEVICE), prep.q0)
     governor = policy.governor(kin)
     v_ref = torch.nan_to_num(torch.diff(prep.tip_ref, dim=0, prepend=prep.tip_ref[:1]) / 0.01)
@@ -46,8 +48,16 @@ def test_policy_controller_matches_the_plant_observation_loop():
             requested = torch.zeros(n, 3, device=DEVICE)
             requested[:, :2] = v_ref[k, :, :2] + 3.0 * (prep.tip_ref[k, :, :2] - pose[:, :2])
             requested[:, 2] = 3.0 * wrap_angle(prep.tip_ref[k, :, 2] - pose[:, 2])
+            requested = policy.to_tracking_twist(kin, plant.q, requested)
             command, _ = governor(plant.q, plant.v, requested)
-            plant.begin_action(policy(plant.observe(command)))
+            ahead = policy.future(
+                lambda tick: v_ref[min(tick, len(v_ref) - 1)], k, policy.settings.decimation
+            )
+            if ahead is not None:
+                # All these fixed-angle tip lines have zero angular feedforward, so translating lookahead
+                # to the pivot leaves it unchanged.
+                assert (ahead[:, :, 2] == 0).all()
+            plant.begin_action(policy(plant.observe(command), ahead))
         plant.step()
         expected.append(plant.u_cmd.clone().cpu())
     torch.testing.assert_close(traces["u"], torch.stack(expected), rtol=1e-4, atol=1e-5)

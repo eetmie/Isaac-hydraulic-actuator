@@ -1,0 +1,17 @@
+{
+  "source_run": "weekend_20261113/study",
+  "source_checkpoint": "C:\\Users\\sh23937\\IsaacTraining\\runs\\weekend_20261113\\study\\controllers\\pivot_control_seed42\\model_3499.pt",
+  "checkpoint_sha256": "ef02f256fe4ad076d46de14b9e76d8828355451f5e69dfca457f0d3d9f07b9cb",
+  "selection": "Fixed seed 42 of the matched pivot_control runs; selected by method, without ranking seeds on evaluation scores.",
+  "tracked_point": "pivot",
+  "model_files": {
+    "model_meta.json": "bddf3534cd3b2bff8555cd71f3946dc0f81dc9c736e448a7998963df62714141",
+    "mlp_state_dict.pt": "b848cb29a02c0911872d4b55653e655508f2553d7c903db191925975b1adf1f4",
+    "x_mean.npy": "df1a41e1769cc998733419eb2831d2e79335fcc28c168750b0b09abea0f2df64",
+    "x_std.npy": "4d95bf16f8ee48b1099e7d325b3666d78a0a85f29a0b6bc646b3a09a6b14eb0c",
+    "y_mean.npy": "ded21946e0084648263dff79d16a6f766d022d1879afce667a87231671ebafc6",
+    "y_std.npy": "c63c5d0ddda5e0769da06580f1573e236ba622f9a46d697ed404914d600d6981"
+  },
+  "asset_sha256": "8fd10b976aea8822f9c3e9bc4a15abb18c35db110818ba771597c2172b39472f",
+  "hardware_validated": false
+}

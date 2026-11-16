@@ -101,10 +101,11 @@ def test_achievable_commands_stay_inside_their_fraction_of_the_table(monkeypatch
     assert (speed >= 0.05 * 0.05 - 1e-6).all() and (speed <= 0.9 * 0.05 + 1e-6).all()
 
 
-def test_default_config_keeps_the_original_recipe():
+def test_default_config_uses_pivot_tracking_without_reward_retuning():
     from hydraulic_controller.env import HydraulicControlEnvCfg
 
     cfg = HydraulicControlEnvCfg()
+    assert cfg.tracked_point == "pivot" and cfg.angular_weight == 0.5 and not cfg.pose_priority
     assert cfg.extra_model_paths == () and cfg.command_speed_mode == "uniform"
     assert cfg.linear_error_weight == 0.0 and cfg.angular_error_weight == 0.0
 
@@ -149,10 +150,12 @@ def test_motion_starts_continue_moving_states_with_their_histories(models):
 def test_pivot_environment_observes_and_rewards_the_pivot():
     from hydraulic_controller.env import HydraulicControlEnv, HydraulicControlEnvCfg
 
-    env = HydraulicControlEnv(HydraulicControlEnvCfg(num_envs=8, device="cpu", tracked_point="pivot"))
+    env = HydraulicControlEnv(HydraulicControlEnvCfg(num_envs=8, device="cpu"))
     assert env.contract()["tracked_point"] == "pivot" and env.governor.point == "pivot"
     pose, _ = env.kin.pose_jacobian(env.plant.q, "pivot")
-    torch.testing.assert_close(env.plant.tip_state()[0], pose)
+    torch.testing.assert_close(env.plant.tracking_state()[0], pose)
+    torch.testing.assert_close(env.plant.tip_state()[0], env.kin.pose_jacobian(env.plant.q)[0])
+    assert "pivot_xz" in env.contract()["observation_fields"]
     env.step(torch.zeros(8, 3))
 
 

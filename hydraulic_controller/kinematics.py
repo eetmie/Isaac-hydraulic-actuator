@@ -201,6 +201,24 @@ class ExcavatorKinematics:
         c, s = turn.cos(), turn.sin()  # rotation about +Y as in _transforms: x' = c x + s z, z' = -s x + c z
         return torch.stack((c * offset[0] + s * offset[1], -s * offset[0] + c * offset[1]), dim=-1)
 
+    def tip_twist_to_pivot(self, q: torch.Tensor, twist: torch.Tensor) -> torch.Tensor:
+        """Convert an EE twist to the bucket pivot, preserving requested tool angular velocity.
+
+        Both twists use [vx, vz, omega_y]. For the rigid bucket, v_tip is
+        v_pivot + omega_y * [offset_z, -offset_x].
+        """
+        angle = self.pose_jacobian(q)[0][:, 2]
+        offset = self.tip_offset(angle)
+        rotation = torch.stack((offset[:, 1], -offset[:, 0]), dim=1) * twist[:, 2:3]
+        return torch.cat((twist[:, :2] - rotation, twist[:, 2:3]), dim=1)
+
+    def pivot_twist_to_tip(self, q: torch.Tensor, twist: torch.Tensor) -> torch.Tensor:
+        """Convert an internal pivot twist back to the bucket-edge twist [vx, vz, omega_y]."""
+        angle = self.pose_jacobian(q)[0][:, 2]
+        offset = self.tip_offset(angle)
+        rotation = torch.stack((offset[:, 1], -offset[:, 0]), dim=1) * twist[:, 2:3]
+        return torch.cat((twist[:, :2] + rotation, twist[:, 2:3]), dim=1)
+
     def build_collision_grid(
         self,
         resolution: int = 96,
@@ -357,7 +375,7 @@ class ExcavatorKinematics:
 
 
 class CommandGovernor:
-    """Project requested tip velocities into a conservative local reachable set.
+    """Project velocities at the configured tracking point into a conservative local reachable set.
 
     With ``joint_speed_limits`` [rad/s], shape [3, 2] = (negative, positive), the whole twist is also scaled down so
     no joint is asked for more than ``speed_margin`` of its full-valve speed; the direction of motion is preserved.

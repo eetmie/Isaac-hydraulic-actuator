@@ -42,7 +42,10 @@ def export_bundle(policy, directory: Path, profile_dir: Path, cases: int = 64):
 
     directory, profile_dir = Path(directory), Path(profile_dir)
     if policy.contract.get("tracked_point", "tip") != "tip":
-        raise ValueError("The robot runtime sends bucket-tip requests; export a tip-tracking policy")
+        raise ValueError(
+            "Legacy robot bundles do not implement pivot commands; the native runtime needs the pivot adapter "
+            "and sequence-parity checks before deployment. Use ControllerPolicy.export() for the actor alone."
+        )
     if "pose_priority" in policy.contract:
         raise ValueError("The robot runtime does not send the pose-priority slider yet")
     if "lookahead" in policy.contract:

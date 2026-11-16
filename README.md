@@ -52,8 +52,12 @@ The Kit window opens in NN mode. Connect an Xbox-compatible controller:
 
 ## Train the end-effector controller
 
-Step two of the Egli & Hutter recipe: a PPO policy receives a desired bucket-tip
-twist `(X, Z, bucket pitch rate)` and outputs the three valve commands directly.
+Step two of the [Egli & Hutter recipe](https://doi.org/10.3929/ethz-b-000487440):
+a PPO policy tracks the bucket pivot's twist `(X, Z, bucket pitch rate)` and
+outputs the three valve commands directly. Operators and trajectories still
+request the cutting edge's pose or twist; rigid-body kinematics converts the
+edge twist to the pivot before the governor and policy. This keeps bucket
+rotation from competing with linear tracking inside the policy.
 The selected actuator network is the plant, so training runs as batched
 Torch on the GPU with no simulator (~75k steps/s with 4096 environments; a
 1,500-iteration run takes about half an hour). From the Isaac Lab root:
@@ -64,6 +68,10 @@ uv run python scripts/Isaac-hydraulic-actuator/train_controller.py --actuator-ru
 
 Design choices, and the measurement behind each:
 
+- **Pivot tracking internally.** New training uses the pivot for pose, twist,
+  velocity-error observations and rewards. Draw, circle, gamepad and benchmarks
+  share the same edge-to-pivot conversion; all path errors are scored at the edge.
+  Tip tracking remains available for historical checkpoint replay and comparisons.
 - **Carriage rocking is not tracked.** The tracked twist comes from the boom,
   arm and bucket joints only. Rocking cannot be driven by the valves, and the
   learned pitch channel rings far longer than the real carriage when started
@@ -85,8 +93,11 @@ Design choices, and the measurement behind each:
 
 ### Run the draw demo
 
-The baseline controller ships in `models/controller` and is the default,
-so these commands work on a fresh clone without training. They need RSL-RL,
+The default is the weekend pivot controller in `models/controller_pivot`, with
+its exact actuator in `models/actuator_pivot`, so these commands work on a fresh
+clone without training. Seed 42 was packaged without ranking seeds on benchmark
+scores; its [provenance](models/controller_pivot/provenance.json) records the source.
+They need RSL-RL,
 which the Isaac Lab environment already includes. From the Isaac Lab root:
 
 ```bash
@@ -163,10 +174,18 @@ simulation the MLP and the MPC have an advantage the PID lacks: they were traine
 on, or plan with, this very network.
 
 
-## Deploy to the real robot
+## Robot integration
 
-The robot runs controllers with kaivuriprokkis `learned_control` (see its
-README); it needs no copy of this repository. `export_robot_bundle.py` writes a
+The pivot controller is ready for simulation playback and evaluation. The current
+native robot runtime still needs a pivot-aware PPO adapter and sequence-parity
+checks. The legacy `learned_control` bundle exporter below supports tip policies
+only and rejects pivot, lookahead and preference-conditioned policies. Actor-only
+TorchScript export is available through `ControllerPolicy.export()`; it does not
+include the command conversion or history/governor runtime.
+
+The legacy robot implementation runs controllers with kaivuriprokkis
+`learned_control` (see its README); it needs no copy of this repository.
+`export_robot_bundle.py` writes a
 self-contained bundle: TorchScript actor, geometry, collision grid, contract and
 reference cases the robot replays at load. First generate a robot profile whose
 arm geometry is the controller USD's (once per calibration), then export:
@@ -187,11 +206,13 @@ Real-robot sessions are kept under `drive_logs/`.
 
 ## Included models
 
-`models/actuator` is the frozen historical actuator baseline; `models/slew` is
-an independent slew network. `models/controller` contains the historical PPO
-baseline and its plant/geometry contract. Weights and normalization arrays are
-unchanged by this cleanup. The baseline actuator has **not** been retrained on
-the complete dataset. New MLP and PPO runs write their own artifacts and contracts.
+`models/controller_pivot` is the default pivot policy, trained across the selected
+weekend actuator and the historical actuator; `models/actuator_pivot` pins its
+primary plant. `models/actuator` and `models/controller` retain the historical
+actuator and tip-policy baselines, and `models/slew` is an independent slew
+network. Historical policies require their original hash-pinned USD; a changed
+asset is rejected. The historical actuator has **not** been retrained on the
+complete dataset. New MLP and PPO runs write their own artifacts and contracts.
 
 A controller checkpoint pins the exact actuator and USD it was trained with.
 If either changes, train a new controller or use the original matching artifacts;

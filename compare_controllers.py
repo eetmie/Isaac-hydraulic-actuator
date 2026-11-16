@@ -8,7 +8,7 @@ eight poses. No simulator is launched. From the Isaac Lab root::
     uv run python scripts/Isaac-hydraulic-actuator/compare_controllers.py \\
         --pid_gains runs/pid_tune/<run>/pid_gains.yaml
     uv run python scripts/Isaac-hydraulic-actuator/compare_controllers.py --task circles \\
-        --pid_gains runs/pid_tune/<run>/pid_gains.yaml --mlp controller=models/controller/model_1798.pt
+        --pid_gains runs/pid_tune/<run>/pid_gains.yaml --mlp controller=models/controller_pivot/model_3499.pt
 
 Writes summary.json, per_scenario.csv and comparison.png (plus circles.png) to
 ``runs/compare/<time>_<run_name>/``.
@@ -34,6 +34,7 @@ def main(argv=None) -> int:
     import torch
     import yaml
 
+    from hydraulic_controller import DEFAULT_CHECKPOINT
     from hydraulic_controller.benchmark import benchmark_poses
     from hydraulic_controller.comparison import (
         METRICS,
@@ -62,9 +63,9 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--mlp",
         nargs="+",
-        default=[f"mlp={ROOT / 'models/controller/model_1798.pt'}"],
+        default=[f"mlp={DEFAULT_CHECKPOINT}"],
         metavar="NAME=CHECKPOINT[@HZ][#PRIORITY]",
-        help="one or more policy checkpoints to run as controllers (default: the baseline, named mlp); "
+        help="one or more policy checkpoints to run as controllers (default: the pivot policy, named mlp); "
         "@HZ runs one at another policy rate than it was trained at; #PRIORITY sets the pose-priority slider "
         "[0, 1] of a checkpoint trained with one",
     )
@@ -74,6 +75,12 @@ def main(argv=None) -> int:
         "--asset", type=Path, default=DEFAULT_ASSET, help="robot USD the tasks and plant kinematics use"
     )
     parser.add_argument("--sensor_noise_deg", type=float, default=0.02)
+    parser.add_argument(
+        "--sensor_profile",
+        choices=("standard", "gyro", "stress"),
+        default="standard",
+        help="gyro: training-level gyro noise/bias and 0-20 ms delay; stress: double noise/bias and 0-50 ms delay",
+    )
     parser.add_argument("--task", choices=("lines", "circles"), default="lines")
     parser.add_argument(
         "--starts", choices=("working", "benchmark"), help="default: working (lines), benchmark (circles)"
@@ -82,11 +89,18 @@ def main(argv=None) -> int:
         "--speeds_mm_s", type=float, nargs="+", help="default: 20 40 70 (lines), 20 (circles)"
     )
     parser.add_argument("--plants", nargs="+", help="subset of benchmark plants; default all")
+    parser.add_argument(
+        "--speed_sweep",
+        action="store_true",
+        help="lines: default to 5..120 mm/s, complete every 100 mm path and report motion/cruise windows",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--run_name", default="compare")
     parser.add_argument("--out", type=Path, default=ROOT / "runs/compare")
     args = parser.parse_args(argv)
+    if args.speed_sweep and args.task != "lines":
+        parser.error("--speed_sweep requires --task lines")
 
     robot = load_robot_gains(
         args.robot_repo / "configuration_files/profiles" / args.robot / "control_config.yaml"
@@ -113,11 +127,13 @@ def main(argv=None) -> int:
                 label, _, path = item.partition("=")
                 path, _, priority = path.partition("#")
                 path, _, hz = path.partition("@")
-                policy = ControllerPolicy(Path(path), args.device, allow_pivot=True)
+                policy = ControllerPolicy(Path(path), args.device)
                 if priority:
                     if not policy.has_pose_priority:
                         parser.error(f"{label}: {path} has no pose-priority input")
                     policy.pose_priority = float(priority)
+                    if not 0 <= policy.pose_priority <= 1:
+                        parser.error("Pose priority must be in [0, 1]")
                 controllers[label] = PolicyController(policy, policy_hz=int(hz) if hz else None)
         elif name == "mpc":
             controllers[name] = MPPIController(args.mpc_model, MPPIConfig(seed=args.seed))
@@ -129,8 +145,19 @@ def main(argv=None) -> int:
         kin = ExcavatorKinematics(args.asset, args.device)
         where = {"include_home": False, "start_q": tuple(map(tuple, benchmark_poses(kin, 8).tolist()))}
     if args.task == "lines":
-        speeds = tuple(v / 1000 for v in args.speeds_mm_s) if args.speeds_mm_s else TaskConfig.tip_speeds_m_s
+        from hydraulic_controller.speed_audit import SPEEDS_MM_S, line_duration
+
+        supplied = args.speeds_mm_s or (SPEEDS_MM_S if args.speed_sweep else None)
+        speeds = tuple(v / 1000 for v in supplied) if supplied else TaskConfig.tip_speeds_m_s
         task = {"families": ("tip_line",), "tip_speeds_m_s": speeds}
+        if args.speed_sweep:
+            task["duration_s"] = line_duration(
+                speeds,
+                TaskConfig.tip_travel_m,
+                TaskConfig.tip_accel_m_s2,
+                TaskConfig.lead_s,
+                TaskConfig.tail_s,
+            )
     else:
         speeds = (
             tuple(v / 1000 for v in args.speeds_mm_s) if args.speeds_mm_s else TaskConfig.circle_speeds_m_s
@@ -142,7 +169,20 @@ def main(argv=None) -> int:
             "circle_speeds_m_s": speeds,
             "duration_s": math.ceil(longest + 3.0),
         }
-    task_cfg = TaskConfig(**where, **task, sensor_noise_deg=args.sensor_noise_deg)
+    sensor_settings = None
+    if args.sensor_profile != "standard":
+        from hydraulic_controller.observations import SensorController, SensorSettings
+
+        sensor_settings = (
+            SensorSettings() if args.sensor_profile == "gyro" else SensorSettings(0.01, 0.006, 0.006, 5)
+        )
+        controllers = {
+            name: SensorController(controller, sensor_settings, args.seed)
+            for name, controller in controllers.items()
+        }
+    # Explicit sensor profiles supply angle noise themselves, including carriage pitch.
+    angle_noise = args.sensor_noise_deg if sensor_settings is None else 0.0
+    task_cfg = TaskConfig(**where, **task, sensor_noise_deg=angle_noise)
     if args.plants:
         task_cfg = TaskConfig(**{**asdict(task_cfg), "plants": tuple(args.plants)})
     prep = prepare(task_cfg, args.model, args.asset, args.device, robot.ik_lambda)
@@ -157,6 +197,9 @@ def main(argv=None) -> int:
     out_dir = args.out / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{args.run_name}"
     info = {
         "task_config": asdict(task_cfg),
+        "sensor_profile": args.sensor_profile,
+        "speed_sweep": args.speed_sweep,
+        "sensor_settings": asdict(sensor_settings) if sensor_settings is not None else None,
         "scenarios": [s.name + "@" + s.plant for s in prep.scenarios],
         "plant_model": str(args.model),
         "asset": str(args.asset),
@@ -168,6 +211,11 @@ def main(argv=None) -> int:
     if args.task == "circles":
         info["circles"] = {name: summarize_circles(prep, traces[name]) for name in traces}
     write_report(out_dir, prep, summaries, terms, info)
+    if args.speed_sweep:
+        from hydraulic_controller.speed_audit import write_motion_report, write_speed_report
+
+        write_motion_report(out_dir, prep, terms, traces)
+        write_speed_report(args.out, args.out / "speed_analysis")
     plot_report(out_dir / "comparison.png", prep, summaries, traces)
     if args.task == "circles":
         for speed in task_cfg.circle_speeds_m_s:

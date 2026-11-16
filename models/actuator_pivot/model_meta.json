@@ -1,0 +1,127 @@
+{
+  "dt": 0.01,
+  "target_mode": "delta_velocity",
+  "hist_q": 1,
+  "hist_qdot": 41,
+  "hist_u": 21,
+  "qdot_stride": 1,
+  "u_stride": 3,
+  "hist_q_sec": 0.0,
+  "hist_qdot_sec": 0.4,
+  "hist_u_sec": 0.6000000000000001,
+  "include_q": true,
+  "time_col": "timestamp",
+  "u_cols": [
+    "combined_cmd_lift",
+    "combined_cmd_tilt",
+    "combined_cmd_scoop"
+  ],
+  "q_cols": [
+    "joint_pos_boom",
+    "joint_pos_arm",
+    "joint_pos_bucket",
+    "carriage_pitch"
+  ],
+  "qdot_cols": [
+    "joint_vel_boom",
+    "joint_vel_arm",
+    "joint_vel_bucket",
+    "carriage_pitch_rate"
+  ],
+  "units": {
+    "timestamp_raw": "s",
+    "joint_position": "rad",
+    "joint_velocity": "rad/s",
+    "command": "normalized_-1_to_1"
+  },
+  "model": {
+    "hidden": [
+      776,
+      530,
+      402,
+      23,
+      14
+    ],
+    "activation": "relu",
+    "in_dim": 231,
+    "out_dim": 4,
+    "target": "delta_velocity"
+  },
+  "version": "actuator",
+  "learned_carriage": true,
+  "simulation_joint_names": [
+    "revolute_lift",
+    "revolute_tilt",
+    "revolute_tool",
+    "revolute_carriage_pitch"
+  ],
+  "training": {
+    "parent": "C:\\Users\\sh23937\\IsaacTraining\\runs\\overnight_20261112\\a_scratch\\model\\latest",
+    "input_velocity": "gyro",
+    "target_velocity": "gyro",
+    "sensor_contract": {
+      "version": 1,
+      "roles": [
+        "base",
+        "boom",
+        "arm",
+        "bucket"
+      ],
+      "velocity_source": "aligned_y_child_minus_parent",
+      "software_filter": "none",
+      "sampling": "latest_complete_packet_not_after_tick",
+      "bias": "firmware_startup_correction_only",
+      "carriage_pitch_zero_rad": -0.004821687005460262,
+      "mount_pitch_rad": [
+        0.0,
+        0.241728109123881,
+        0.017453221928437734,
+        0.0
+      ]
+    },
+    "step": 37000,
+    "development": {
+      "0.01": {
+        "cases": 96,
+        "path_deg": 0.013021177612245083,
+        "endpoint_deg": 0.013021177612245083,
+        "velocity_rmse_rad_s": 0.028837818652391434
+      },
+      "1": {
+        "cases": 96,
+        "path_deg": 0.3513632118701935,
+        "endpoint_deg": 0.6214178204536438,
+        "velocity_rmse_rad_s": 0.045117322355508804
+      },
+      "10": {
+        "cases": 96,
+        "path_deg": 1.7563468217849731,
+        "endpoint_deg": 2.7785749435424805,
+        "velocity_rmse_rad_s": 0.06033098325133324
+      },
+      "30": {
+        "cases": 87,
+        "path_deg": 3.255974292755127,
+        "endpoint_deg": 5.092527866363525,
+        "velocity_rmse_rad_s": 0.06557577103376389
+      },
+      "finite": true,
+      "rest10_deg": 0.651006281375885,
+      "stop_rate_rad_s": 0.0018480047583580017,
+      "path10_deg": 1.7563468217849731
+    },
+    "test_seen": false,
+    "note": "Canonical raw-gyro training; parent's compiled bound is not guaranteed",
+    "neutral_bound": {
+      "gain": 5.0,
+      "axes": [
+        0,
+        1,
+        2
+      ],
+      "rule": "|v_next[j]| <= gain * sum |u[j]| over the command history",
+      "source": "C:\\Users\\sh23937\\IsaacTraining\\runs\\overnight_20261112\\b_low_lr\\model",
+      "source_state_sha256": "2bbc7dafdb2d4e4acfa68aa93ab9f8cc6f7751aed90b0e855e0c6cabdfd10a5c"
+    }
+  }
+}

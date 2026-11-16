@@ -1,11 +1,27 @@
 # Controller playback and robot deployment
 
+New policies use internal bucket-pivot tracking. The default demo loads
+`models/controller_pivot/model_3499.pt` and its packaged actuator from
+`models/actuator_pivot`. External requests and reported path errors remain at
+the bucket cutting edge. The conversion is applied before the pivot governor;
+observations and rewards then use the pivot's pose and arm-driven twist, with
+the bucket's absolute angle unchanged.
+
+The current native robot stack needs a pivot-aware PPO adapter and sequence
+parity before it can load this controller. The legacy bundle instructions below
+apply to tip policies without lookahead or a preference input; the exporter
+rejects unsupported policies. Actor-only TorchScript export does not provide
+the surrounding runtime. The weekend default is a simulation candidate.
+
 Train an actuator with `training.prepare` and `training.actuator`, then pass its
 run directory to `train_controller.py --actuator-run`. The saved PPO checkpoint
 contains a contract for the selected actuator, USD geometry, observation layout
 and timing. The loader checks the actuator and USD hashes before inference.
 Use a checkpoint from the new run when either artifact has changed; the packaged
 historical controller baseline retains its original training contract.
+Resuming training preserves the saved checkpoint's tracking point, including
+old contracts that omit the field and mean tip tracking. A conflicting
+`--set tracked_point=...` is rejected before writing training outputs.
 
 From the Isaac Lab root, play back a checkpoint:
 
