@@ -317,10 +317,17 @@ def test_drawing_window_keeps_rejection_visible_during_telemetry():
         assert window.to_world(right, bottom) == pytest.approx([0.32, -0.30])
         assert window.to_world(*window.to_canvas([0.5, -0.1])) == pytest.approx([0.5, -0.1])
         incoming.put({"kind": "error", "text": "Out of reach"})
-        state = {"position": [0.6, 0.0], "target": [0.6, 0.0], "error_mm": 0.0, "speed_mm_s": 0.0}
+        state = {
+            "position": [0.6, 0.0],
+            "target": [0.6, 0.0],
+            "error_mm": 0.0,
+            "rotation_error_deg": -1.25,
+            "speed_mm_s": 0.0,
+        }
         incoming.put({"kind": "state", "phase": "hold", "valves": [0.0, 0.0, 0.0], **state})
         window.poll()
         assert window.status.get() == "Out of reach"
+        assert "rotation error -1.25°" in window.telemetry.get()
     finally:
         window.root.destroy()
 

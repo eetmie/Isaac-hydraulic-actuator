@@ -369,6 +369,7 @@ class DrawingWindow:
             self.last_phase = phase
         self.telemetry.set(
             f"{phase.capitalize()} · tracking error {message['error_mm']:.1f} mm · "
+            f"rotation error {message['rotation_error_deg']:+.2f}° · "
             f"speed {message['speed_mm_s']:.1f} mm/s"
         )
         self.canvas.delete("tip", "target")

@@ -137,7 +137,7 @@ def play(args_cli, checkpoint: Path, policy, sim_cfg) -> None:
     from isaaclab.markers.config import SPHERE_MARKER_CFG
     from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 
-    from hydraulic_controller.core import HOME, HydraulicPlant
+    from hydraulic_controller.core import HOME, HydraulicPlant, wrap_angle
     from hydraulic_controller.draw_ui import open_drawing_window
     from hydraulic_controller.gamepad import GamepadVelocity
     from hydraulic_controller.kinematics import ExcavatorKinematics
@@ -272,6 +272,7 @@ def play(args_cli, checkpoint: Path, policy, sim_cfg) -> None:
                             "target": session.display_target.tolist(),
                             "phase": session.phase,
                             "error_mm": 1000 * error,
+                            "rotation_error_deg": math.degrees(float(wrap_angle(session.angle - pose[0, 2]))),
                             "speed_mm_s": 1000 * float(twist[0, :2].norm()),
                             "valves": plant.u[0].detach().cpu().tolist(),
                         }
