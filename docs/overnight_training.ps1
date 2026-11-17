@@ -1,4 +1,4 @@
-# Use an existing Isaac Lab environment without moving this repository.
+# Use Isaac Lab's uv project without moving this repository.
 param(
     [switch]$Smoke,
     [switch]$PlanOnly,
@@ -13,9 +13,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
-$python = Join-Path $IsaacLabRoot ".venv/Scripts/python.exe"
-if (-not (Test-Path -LiteralPath $python)) {
-    throw "Isaac Lab Python missing: $python. Set -IsaacLabRoot to your existing checkout."
+Get-Command uv -ErrorAction Stop | Out-Null
+if (-not (Test-Path -LiteralPath (Join-Path $IsaacLabRoot "pyproject.toml"))) {
+    throw "Isaac Lab project missing: $IsaacLabRoot. Set -IsaacLabRoot to your checkout."
 }
 if (-not $RunRoot) {
     $RunRoot = if ($Smoke) { "runs/overnight_smoke" } else { "runs/overnight" }
@@ -32,7 +32,7 @@ $env:MKL_NUM_THREADS = "2"
 $env:PYTHONUNBUFFERED = "1"
 Push-Location $repo
 try {
-    & $python @runnerArgs
+    & uv run --project $IsaacLabRoot python @runnerArgs
     $code = $LASTEXITCODE
 } finally {
     Pop-Location

@@ -1,17 +1,18 @@
 # Resume both frozen queues after a reboot or a transient CUDA failure.
 param(
     [string]$RunRoot = (Join-Path $HOME "IsaacTraining/runs/weekend_20261113"),
-    [string]$Python = (Join-Path $HOME "IsaacLab/.venv/Scripts/python.exe"),
+    [string]$IsaacLabRoot = (Join-Path $HOME "IsaacLab"),
     [switch]$PlanOnly
 )
 
 $ErrorActionPreference = "Stop"
+Get-Command uv -ErrorAction Stop | Out-Null
 $runRootPath = (Resolve-Path -LiteralPath $RunRoot).Path
 $quickOut = Join-Path $runRootPath "quick"
 $studyOut = Join-Path $runRootPath "study"
 $quick = Get-Content -LiteralPath (Join-Path $quickOut "plan.json") -Raw | ConvertFrom-Json
 $study = Get-Content -LiteralPath (Join-Path $studyOut "plan.json") -Raw | ConvertFrom-Json
-foreach ($required in @($Python, $quick.repository, $quick.base, $study.repository, $study.base)) {
+foreach ($required in @((Join-Path $IsaacLabRoot "pyproject.toml"), $quick.repository, $quick.base, $study.repository, $study.base)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Required training path missing: $required"
     }
@@ -30,12 +31,12 @@ $env:MKL_NUM_THREADS = "2"
 $env:PYTHONUNBUFFERED = "1"
 
 # Exercise CUDA before either runner changes its status or launches work.
-& $Python -B -c 'import torch; print(torch.__version__); print(torch.cuda.get_device_name(0)); print(torch.ones(1024).cuda().sum().item())'
+& uv run --project $IsaacLabRoot python -B -c 'import torch; print(torch.__version__); print(torch.cuda.get_device_name(0)); print(torch.ones(1024).cuda().sum().item())'
 if ($LASTEXITCODE -ne 0) { throw "CUDA preflight failed; neither queue was started." }
 
 Push-Location -LiteralPath $quick.repository
 try {
-    & $Python -u -m training.rotation_ablation --base $quick.base --out $quickOut --iterations $quick.iterations
+    & uv run --project $IsaacLabRoot python -u -m training.rotation_ablation --base $quick.base --out $quickOut --iterations $quick.iterations
     if ($LASTEXITCODE -ne 0) { throw "Quick queue failed. Inspect $quickOut/status.json and its named log." }
 } finally {
     Pop-Location
@@ -43,7 +44,7 @@ try {
 
 Push-Location -LiteralPath $study.repository
 try {
-    & $Python -u -m training.weekend_comparison --base $study.base --quick $quickOut --out $studyOut --finish_at $study.finish_at
+    & uv run --project $IsaacLabRoot python -u -m training.weekend_comparison --base $study.base --quick $quickOut --out $studyOut --finish_at $study.finish_at
     if ($LASTEXITCODE -ne 0) { throw "Study queue failed. Inspect $studyOut/status.json and its named log." }
 } finally {
     Pop-Location

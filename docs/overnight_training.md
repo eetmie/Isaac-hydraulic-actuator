@@ -1,7 +1,7 @@
 ﻿# Overnight training on a Windows laptop
 
-The runner uses an existing Isaac Lab `.venv`; the actuator repository can live
-anywhere. It trains on the GPU without launching Isaac Sim. Keep the laptop on
+The launchers use `uv run --project <IsaacLabRoot> python`; the actuator repository
+can live anywhere. It trains on the GPU without launching Isaac Sim. Keep the laptop on
 mains power. The runner prevents Windows from sleeping while it is alive and
 releases that request when it exits; it does not change the system power plan.
 
@@ -18,7 +18,8 @@ uvx --from huggingface_hub hf download eetmie/excavator-hydraulic-actuator --typ
 `kaivuriprokkis` must be beside this checkout for the final robot-PID comparisons.
 The Python environment needs the normal training dependencies (Torch, NumPy,
 RSL-RL, TensorDict, PyYAML, TensorBoard, filelock, SciPy, matplotlib and OpenUSD).
-No environment synchronization or package installation occurs in the runner.
+uv handles environment synchronization before starting each launcher stage. Once
+running, the Python orchestrator uses that interpreter for its child processes.
 
 ## Benchmark first
 
@@ -53,7 +54,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File docs/overnight_training.ps1 
 
 Other options: `-RunRoot runs/my_run`, `-IsaacLabRoot C:/path/IsaacLab`,
 `-ActuatorStepSeconds 0.18`, `-PpoIterationSeconds 1.05`, and `-PlanOnly`.
-The Python entry point is `python -m training.overnight --help`.
+The entry point, from this repository in PowerShell, is
+`uv run --project "$HOME/IsaacLab" python -m training.overnight --help`.
 
 For long runs, use `-RunRoot C:/Users/<user>/IsaacTraining/runs/<name>` outside
 OneDrive. The first night's queue hit a Windows sharing violation while replacing
@@ -148,7 +150,7 @@ fixed at 1e-4. Checkpoints and optimizer state are retained every 100 iterations
 The original queue and its budget remain unchanged.
 
 ```powershell
-& "$HOME/IsaacLab/.venv/Scripts/python.exe" -u -m training.friday_extension `
+uv run --project "$HOME/IsaacLab" python -u -m training.friday_extension `
     --base C:/Users/<user>/IsaacTraining/runs/overnight_20261112 `
     --finish_at 2026-11-13T10:00:00+02:00
 ```
@@ -217,7 +219,7 @@ with a generated USD profile; that check does not validate native integration or
 the actual robot calibration. No policy is automatically deployed or promoted.
 
 ```powershell
-& "$HOME/IsaacLab/.venv/Scripts/python.exe" -u -m training.weekend_comparison `
+uv run --project "$HOME/IsaacLab" python -u -m training.weekend_comparison `
     --base C:/Users/sh23937/IsaacTraining/runs/weekend_20261113/weekend_frozen/base `
     --quick C:/Users/sh23937/IsaacTraining/runs/weekend_20261113/quick `
     --out C:/Users/sh23937/IsaacTraining/runs/weekend_20261113/study `
@@ -237,8 +239,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File docs/resume_weekend_training
 This launcher checks CUDA, finishes the quick queue using its frozen snapshot,
 then resumes the study using its separate snapshot and saved deadline. It skips
 completed stages and retains checkpoints and logs. `-PlanOnly` checks the paths
-and prints the queues without starting work; `-RunRoot` and `-Python` override
-the defaults. The study-only command above requires a completed quick queue.
+and prints the queues without starting work; `-RunRoot` and `-IsaacLabRoot`
+override the defaults. The study-only command above requires a completed quick queue.
 
 The weekend line evaluations additionally use `--speed_sweep`: 5, 10, 20, 40,
 70, 100 and 120 mm/s, completing every 100 mm path. They write `speed_audit.csv`
