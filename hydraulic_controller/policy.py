@@ -146,7 +146,7 @@ class PolicyController:
 
     ``policy_hz`` runs the policy at another rate than it was trained at (it must divide 100). For a checkpoint
     that tracks the bucket pivot, the requested EE twist is converted using the bucket's rigid offset;
-    the external target remains the EE pose.
+    the external target remains the EE pose. Histories and lookahead offsets keep their training-time spacing.
     """
 
     def __init__(
@@ -155,8 +155,8 @@ class PolicyController:
         self.policy, self.kp, self.kp_angle = policy, kp, kp_angle
         self.decimation = policy.settings.decimation
         if policy_hz is not None:
-            if 100 % policy_hz:
-                raise ValueError("policy_hz must divide the 100 Hz hydraulic rate")
+            if policy_hz <= 0 or 100 % policy_hz:
+                raise ValueError("policy_hz must be a positive divisor of the 100 Hz hydraulic rate")
             self.decimation = 100 // policy_hz
 
     def reset(self, task) -> None:
@@ -198,6 +198,6 @@ class PolicyController:
                 velocity = self.v_ref[min(tick, last)]
                 return self.policy.to_tracking_twist(task.kin, q, velocity)
 
-            ahead = self.policy.future(feedforward, k, self.decimation)
+            ahead = self.policy.future(feedforward, k, self.policy.settings.decimation)
             self.u = torch.tanh(self.policy(self.history.observe(task.kin, command, self.point), ahead))
         return self.u

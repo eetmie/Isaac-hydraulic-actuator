@@ -73,3 +73,41 @@ def test_policy_receives_ee_request_and_angular_feedforward_without_changing_ope
     desired = kin.tip_twist_to_pivot(q, expected) if point == "pivot" else expected
     torch.testing.assert_close(captured["command"], desired, atol=2e-5, rtol=2e-6)
     torch.testing.assert_close(task.tip_ref, original, rtol=0, atol=0)
+
+
+def test_execution_rate_changes_action_cadence_without_retiming_trained_preview():
+    kin = ExcavatorKinematics()
+    q = torch.tensor([HOME])
+    initial = kin.pose_jacobian(q)[0].double()
+    ticks = torch.arange(32, dtype=torch.float64)
+    reference = initial[None].repeat(32, 1, 1)
+    # Backward-difference feedforward at tick k is k * 0.001 m/s.
+    reference[:, 0, 0] += ticks * (ticks + 1) * 0.000005
+    task = TaskBatch(kin, q, torch.zeros_like(reference), reference, torch.ones(1, dtype=torch.bool))
+
+    class Policy:
+        settings = ControllerSettings(decimation=10)
+        model_path, tracked_point, lookahead_steps = DEFAULT_MODEL, "tip", 2
+        future = ControllerPolicy.future
+        to_tracking_twist = ControllerPolicy.to_tracking_twist
+
+        def __init__(self):
+            self.previews = []
+
+        def governor(self, kin):
+            return lambda q, v, request: (request, torch.zeros(len(q)))
+
+        def __call__(self, observation, ahead):
+            self.previews.append(ahead.clone())
+            return torch.zeros(1, 3)
+
+    for hz, expected_calls in ((10, 2), (100, 12)):
+        policy = Policy()
+        controller = PolicyController(policy, policy_hz=hz)
+        controller.reset(task)
+        for tick in range(12):
+            controller(tick, q, q * 0)
+        assert len(policy.previews) == expected_calls
+        for preview in policy.previews:
+            # The two trained slots stay at +100 and +200 ms, even with 10 ms execution updates.
+            torch.testing.assert_close(preview[0, :, 0], torch.tensor([0.01, 0.02], dtype=torch.float64))

@@ -95,6 +95,9 @@ def main(argv=None) -> int:
         help="lines: default to 5..120 mm/s, complete every 100 mm path and report motion/cruise windows",
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--smoothness", action="store_true", help="Write motion jerk, valve-step and holding metrics"
+    )
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--run_name", default="compare")
     parser.add_argument("--out", type=Path, default=ROOT / "runs/compare")
@@ -105,7 +108,7 @@ def main(argv=None) -> int:
     robot = load_robot_gains(
         args.robot_repo / "configuration_files/profiles" / args.robot / "control_config.yaml"
     )
-    controllers = {}
+    controllers, policy_rates, policy_timing = {}, {}, {}
     for name in args.controllers:
         if name == "pid_robot":
             controllers[name] = JointPIDController(robot)
@@ -135,8 +138,18 @@ def main(argv=None) -> int:
                     if not 0 <= policy.pose_priority <= 1:
                         parser.error("Pose priority must be in [0, 1]")
                 controllers[label] = PolicyController(policy, policy_hz=int(hz) if hz else None)
+                policy_rates[label] = 100 // controllers[label].decimation
+                policy_timing[label] = dict(
+                    training_hz=policy.settings.policy_hz,
+                    execution_hz=policy_rates[label],
+                    history_hz=100,
+                    preview_offsets_s=[
+                        j * policy.settings.policy_dt for j in range(1, policy.lookahead_steps + 1)
+                    ],
+                )
         elif name == "mpc":
             controllers[name] = MPPIController(args.mpc_model, MPPIConfig(seed=args.seed))
+            policy_rates[name] = 100 // controllers[name].cfg.replan_ticks
 
     starts = args.starts or ("working" if args.task == "lines" else "benchmark")
     if starts == "working":
@@ -206,8 +219,14 @@ def main(argv=None) -> int:
         "pid_robot": asdict(robot),
         "pid_gains_file": str(args.pid_gains) if args.pid_gains else None,
         "mlp_checkpoints": dict(item.partition("=")[::2] for item in args.mlp),
+        "policy_timing": policy_timing,
         "mpc": {"model": str(args.mpc_model), **asdict(MPPIConfig(seed=args.seed))},
     }
+    if args.smoothness:
+        from hydraulic_controller.smoothness import write_report as write_smoothness
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        info["smoothness"] = write_smoothness(out_dir, prep, traces, policy_rates)
     if args.task == "circles":
         info["circles"] = {name: summarize_circles(prep, traces[name]) for name in traces}
     write_report(out_dir, prep, summaries, terms, info)

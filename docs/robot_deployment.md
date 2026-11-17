@@ -7,6 +7,9 @@ the bucket cutting edge. The conversion is applied before the pivot governor;
 observations and rewards then use the pivot's pose and arm-driven twist, with
 the bucket's absolute angle unchanged.
 
+Use **20 Hz training / 20 Hz policy execution**, with hydraulic and sensor
+histories at 100 Hz; see the [rate-study decision](policy_rate_comparison.md).
+
 The current native robot stack needs a pivot-aware PPO adapter and sequence
 parity before it can load this controller. The legacy bundle instructions below
 apply to tip policies without lookahead or a preference input; the exporter
@@ -30,6 +33,16 @@ uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.p
     --checkpoint scripts/Isaac-hydraulic-actuator/logs/rsl_rl/hydraulic_controller/<run>/model_<iteration>.pt \
     --mode draw
 ```
+
+For a checkout outside Isaac Lab, run from the actuator repository in PowerShell:
+
+```powershell
+uv run --project "$HOME/IsaacLab" --extra isaacsim python .\run_controller.py --mode draw --viz kit
+```
+
+This selects Isaac Lab's managed environment while retaining the actuator
+repository as the working directory. Replace the project path if Isaac Lab is
+installed elsewhere.
 
 The command frame is lower-carriage XZ with pitch about positive Y. Joint order
 is boom, arm, bucket, carriage pitch, in radians and radians/second. The measured

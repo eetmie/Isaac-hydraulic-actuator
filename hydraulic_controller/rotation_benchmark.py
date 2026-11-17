@@ -22,7 +22,17 @@ from .rotation import FixedTipRotation
 
 
 @torch.inference_mode()
-def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None, model_path=None, asset_path=None):
+def benchmark(
+    policy,
+    out: Path,
+    poses=4,
+    cycles=3,
+    robot_profile=None,
+    model_path=None,
+    asset_path=None,
+    smoothness=False,
+    policy_hz=None,
+):
     torch.manual_seed(731)
     kin = ExcavatorKinematics(asset_path or policy.asset_path, policy.device)
     kin.build_collision_grid()
@@ -35,6 +45,10 @@ def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None, model_pa
     rows = []
     traces = {}
     settings = policy.settings
+    execution_hz = round(settings.policy_hz) if policy_hz is None else policy_hz
+    if execution_hz <= 0 or 100 % execution_hz:
+        raise ValueError("policy_hz must be a positive divisor of the 100 Hz hydraulic rate")
+    decimation = 100 // execution_hz
     for amplitude in (5.0, 10.0):
         admitted_starts, start_indices = [], []
         for index, q in enumerate(starts):
@@ -85,7 +99,7 @@ def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None, model_pa
                 t = step * 0.01
                 angle, rate = sweep.reference(t)
                 delta = angle - sweep.initial[2]
-                if step % settings.decimation == 0:
+                if step % decimation == 0:
                     q = plant.q if sensor_mode == "ideal" else sensors.history.q
                     v = plant.v if sensor_mode == "ideal" else sensors.history.v[:, 0]
                     observed_pose, _ = robot.pose_jacobian(q)
@@ -111,8 +125,17 @@ def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None, model_pa
                     max_angle, wrap_angle(pose[:, 2] - initial_pose[:, 2] - delta).abs()
                 )
                 failures |= plant.invalid | plant.limit_hit | kin.colliding(plant.q)
-                if step % 5 == 0:
+                if step % (1 if smoothness else 5) == 0:
                     logs.append(torch.cat((pose, plant.u_cmd), 1).cpu().numpy())
+            recorded = np.stack(logs)
+            motion = {}
+            if smoothness:
+                from .smoothness import metrics
+
+                motion = metrics(
+                    dict(tip=torch.from_numpy(recorded[:, :, :3]), u=torch.from_numpy(recorded[:, :, 3:])),
+                    execution_hz,
+                )
             for i in range(n):
                 rows.append(
                     {
@@ -125,9 +148,10 @@ def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None, model_pa
                         "angle_max_deg": float(torch.rad2deg(max_angle[i])),
                         "failed": bool(failures[i]),
                         "q0_rad": q0[i].tolist(),
+                        **{key: float(value[i]) for key, value in motion.items()},
                     }
                 )
-            traces[f"amp{int(amplitude)}_{sensor_mode}"] = np.stack(logs)
+            traces[f"amp{int(amplitude)}_{sensor_mode}"] = recorded
             print(
                 json.dumps(
                     {
@@ -148,6 +172,11 @@ def benchmark(policy, out: Path, poses=4, cycles=3, robot_profile=None, model_pa
         "pose_priority": policy.pose_priority if policy.has_pose_priority else None,
         "cycles": cycles,
         "rate_deg_s": 3,
+        "training_policy_hz": settings.policy_hz,
+        "execution_policy_hz": execution_hz,
+        "reference_preview": "hold_current_command",
+        "trace_dt_s": 0.01 if smoothness else 0.05,
+        "smoothness_window": "full rotation trial including endpoint holds" if smoothness else None,
         "rows": rows,
         "robot_profile_sha256": None if robot_profile is None else sha256(Path(robot_profile)),
         "tip_hold_passed": all(not r["failed"] and r["tip_max_mm"] <= 20 for r in rows),
@@ -167,6 +196,12 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--poses", type=int, default=4)
     parser.add_argument("--cycles", type=int, default=3)
+    parser.add_argument(
+        "--policy_hz", type=int, help="Execution rate override; training history spacing is retained"
+    )
+    parser.add_argument(
+        "--smoothness", action="store_true", help="Record at 100 Hz and score motion smoothness"
+    )
     parser.add_argument("--robot_profile", type=Path)
     parser.add_argument("--model", type=Path, help="Common evaluation plant instead of the training plant")
     parser.add_argument("--asset", type=Path, help="Common evaluation geometry instead of the training asset")
@@ -186,6 +221,8 @@ def main():
         args.robot_profile,
         args.model,
         args.asset,
+        smoothness=args.smoothness,
+        policy_hz=args.policy_hz,
     )
 
 

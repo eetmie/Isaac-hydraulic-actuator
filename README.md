@@ -97,6 +97,8 @@ The default is the weekend pivot controller in `models/controller_pivot`, with
 its exact actuator in `models/actuator_pivot`, so these commands work on a fresh
 clone without training. Seed 42 was packaged without ranking seeds on benchmark
 scores; its [provenance](models/controller_pivot/provenance.json) records the source.
+Keep training and execution at **20 Hz**, with 100 Hz hydraulic/sensor updates;
+see the [rate comparison results](docs/policy_rate_comparison.md).
 They need RSL-RL,
 which the Isaac Lab environment already includes. From the Isaac Lab root:
 
@@ -105,6 +107,18 @@ uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.p
 uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.py --mode circle --speed-mm-s 40
 uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/run_controller.py --mode gamepad --speed-mm-s 60
 ```
+
+If this repository is outside Isaac Lab, select the Isaac Lab uv project explicitly.
+From this repository's directory in PowerShell (replace `$HOME/IsaacLab` if needed):
+
+```powershell
+uv run --project "$HOME/IsaacLab" --extra isaacsim python .\run_controller.py --mode draw --viz kit
+```
+
+Use `--mode circle` for an automatic trajectory or `--mode gamepad` for stick
+control. uv manages the environment; no activation or direct `.venv` Python
+path is needed. Training commands use the same `--project` without the
+`--extra isaacsim` option, because they do not launch the simulator.
 
 Playback cruises at 30 mm/s unless `--speed-mm-s` is given. Pass
 `--checkpoint path/to/model_N.pt` to run your own training run instead; the
