@@ -10,11 +10,23 @@ the bucket's absolute angle unchanged.
 Use **20 Hz training / 20 Hz policy execution**, with hydraulic and sensor
 histories at 100 Hz; see the [rate-study decision](policy_rate_comparison.md).
 
-The current native robot stack needs a pivot-aware PPO adapter and sequence
-parity before it can load this controller. The legacy bundle instructions below
-apply to tip policies without lookahead or a preference input; the exporter
-rejects unsupported policies. Actor-only TorchScript export does not provide
-the surrounding runtime. The weekend default is a simulation candidate.
+The native robot stack runs these policies with `kaivuriprokkis/native_stack/tools/ppo_live.py`
+(circle and gamepad modes through `kaivuri-control`). Export the bundle it loads, from the Isaac Lab
+root:
+
+```bash
+uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/export_robot_bundle.py native \
+    --out ../kaivuriprokkis/native_stack/ppo_bundles/controller_pivot
+```
+
+The bundle holds the actor weights, the kinematic chain, the collision grid and reference cases
+computed with the training code (edge-to-pivot conversion, governor, observation with lookahead,
+history rollover, actor). The robot's NumPy runtime replays them at every load and refuses a
+mismatch. No generated profile is needed: the training USD is retargeted to the robot profile and
+angles use the fixed sensor contract. The weekend default first ran with powered hydraulics on
+2026-11-18: a 50 mm circle at 20 mm/s tracked with 2.5 mm RMS error (max 7.1 mm), and gamepad edge
+control worked. Speed surges at about 1 Hz on the machine and, about half as large, in simulation. The legacy bundle instructions
+below apply to tip policies on the frozen Python stack.
 
 Train an actuator with `training.prepare` and `training.actuator`, then pass its
 run directory to `train_controller.py --actuator-run`. The saved PPO checkpoint

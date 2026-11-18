@@ -11,6 +11,12 @@ Isaac Lab root::
     uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/export_robot_bundle.py export \\
         --checkpoint models/controller/model_1798.pt --robot jetson_bucket \\
         --out ../kaivuriprokkis/learned_control/bundles/controller_bucket
+
+The native stack (``native_stack/tools/ppo_live.py``) needs no generated profile; pivot and lookahead
+policies export only this way::
+
+    uv run --extra isaacsim python scripts/Isaac-hydraulic-actuator/export_robot_bundle.py native \\
+        --out ../kaivuriprokkis/native_stack/ppo_bundles/controller_pivot
 """
 
 from __future__ import annotations
@@ -66,6 +72,14 @@ def export(args) -> None:
     print(f"Exported {directory.resolve()} for {profile_dir}")
 
 
+def native(args) -> None:
+    from hydraulic_controller import DEFAULT_CHECKPOINT
+    from hydraulic_controller.bundle import export_native_bundle
+    from hydraulic_controller.policy import ControllerPolicy
+
+    print(f"Exported {export_native_bundle(ControllerPolicy(args.checkpoint or DEFAULT_CHECKPOINT), args.out)}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -81,8 +95,11 @@ def main() -> None:
     exp.add_argument("--robot_repo", type=Path, default=ROOT.parent / "kaivuriprokkis")
     exp.add_argument("--robot", default="jetson_bucket", help="Generated profile the bundle is pinned to")
     exp.add_argument("--out", type=Path, required=True)
+    nat = commands.add_parser("native", help="Export a checkpoint for native_stack/tools/ppo_live.py")
+    nat.add_argument("--checkpoint", type=Path, help="Default: the packaged pivot controller")
+    nat.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    {"profile": profile, "export": export}[args.mode](args)
+    {"profile": profile, "export": export, "native": native}[args.mode](args)
 
 
 if __name__ == "__main__":

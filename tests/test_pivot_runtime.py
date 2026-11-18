@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from hydraulic_controller.benchmark import _Rollout
-from hydraulic_controller.bundle import export_bundle
+from hydraulic_controller.bundle import export_bundle, export_native_bundle
 from hydraulic_controller.core import HOME, HydraulicPlant, sha256
 from hydraulic_controller.kinematics import ExcavatorKinematics
 from hydraulic_controller.policy import ControllerPolicy
@@ -88,7 +88,7 @@ def test_resume_retains_tracking_semantics_even_when_old_contract_omits_point(tm
 
 
 def test_legacy_export_refuses_pivot_before_writing_a_misinterpreted_bundle(policy, tmp_path):
-    with pytest.raises(ValueError, match="pivot adapter"):
+    with pytest.raises(ValueError, match="pivot commands"):
         export_bundle(policy, tmp_path / "bundle", tmp_path)
     assert not (tmp_path / "bundle").exists()
 
@@ -104,3 +104,24 @@ def test_historical_checkpoint_without_tracking_field_remains_tip_tracking(tmp_p
     torch.testing.assert_close(legacy.to_tracking_twist(kin, q, request), request)
     action = legacy(torch.zeros(1, legacy.contract["observation_dim"]))
     assert action.shape == (1, 3) and torch.isfinite(action).all()
+
+
+def test_native_bundle_carries_the_actor_and_replays_on_the_robot_runtime(policy, tmp_path):
+    import sys
+
+    import numpy as np
+
+    directory = export_native_bundle(policy, tmp_path / "native")
+    contract = json.loads((directory / "contract.json").read_text())
+    arrays = np.load(directory / "arrays.npz")
+    assert contract["tracked_point"] == "pivot" and contract["lookahead_steps"] == policy.lookahead_steps
+    assert contract["arrays_sha256"] == sha256(directory / "arrays.npz")
+    x = (arrays["ref_observation"] - arrays["obs_mean"]) / arrays["obs_scale"]
+    x = np.tanh(np.tanh(x @ arrays["w0"].T + arrays["b0"]) @ arrays["w1"].T + arrays["b1"])
+    np.testing.assert_allclose(x @ arrays["w2"].T + arrays["b2"], arrays["ref_action"], atol=1e-5)
+    tools = Path(__file__).resolve().parents[2] / "kaivuriprokkis/native_stack/tools"
+    if (tools / "ppo_policy.py").is_file():  # the sibling robot checkout, when present
+        sys.path.insert(0, str(tools))
+        from ppo_policy import Bundle
+
+        Bundle(directory)  # raises on any reference mismatch

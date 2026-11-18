@@ -43,8 +43,8 @@ def export_bundle(policy, directory: Path, profile_dir: Path, cases: int = 64):
     directory, profile_dir = Path(directory), Path(profile_dir)
     if policy.contract.get("tracked_point", "tip") != "tip":
         raise ValueError(
-            "Legacy robot bundles do not implement pivot commands; the native runtime needs the pivot adapter "
-            "and sequence-parity checks before deployment. Use ControllerPolicy.export() for the actor alone."
+            "Legacy robot bundles do not implement pivot commands; use export_native_bundle "
+            "(export_robot_bundle.py native) for the native stack."
         )
     if "pose_priority" in policy.contract:
         raise ValueError("The robot runtime does not send the pose-priority slider yet")
@@ -142,3 +142,94 @@ def write_reference(directory: Path, contract: dict, cases: int) -> None:
     np.savez(
         directory / REFERENCE, **{key: value.numpy().astype(np.float32) for key, value in arrays.items()}
     )
+
+
+NATIVE_ARRAYS = "arrays.npz"
+
+
+@torch.inference_mode()
+def export_native_bundle(policy, directory: Path, cases: int = 64, sequence: int = 80) -> Path:
+    """Export ``policy`` for kaivuriprokkis ``native_stack/tools/ppo_live.py`` (NumPy only, no Torch on the robot).
+
+    Two files: ``contract.json`` (training contract, kinematic chain, sizes) and ``arrays.npz`` (actor weights,
+    collision grid, reference cases). The training USD is retargeted to the robot profile and angles use the
+    fixed sensor contract, so the robot needs no second geometry. Tip and pivot policies, with or without
+    lookahead, are supported; the robot replays the reference cases at load and refuses a mismatch.
+    """
+    directory = Path(directory)
+    if "pose_priority" in policy.contract:
+        raise ValueError("The native runtime does not send the pose-priority slider")
+    source = ExcavatorKinematics(policy.asset_path, "cpu")
+    source.build_collision_grid()
+    geometry = {key: source.to_dict()[key] for key in ("version", "frames", "limits_rad", "tip")}
+    geometry.update(polygons=[], collision_pairs=[], links=[])
+    kin = ExcavatorKinematics.from_dict(geometry)
+    kin._grid = source._grid.cpu()
+    meta = json.loads((policy.model_path / "model_meta.json").read_text())
+    velocity_samples = (meta["hist_qdot"] - 1) * meta.get("qdot_stride", 1) + 1
+    command_samples = (meta["hist_u"] - 1) * meta.get("u_stride", 1) + 1
+    u_stride, steps, point = meta.get("u_stride", 1), policy.lookahead_steps, policy.tracked_point
+
+    actor = policy.actor.cpu()
+    modules = list(actor.mlp)
+    layers = modules[::2]
+    if not all(isinstance(m, torch.nn.Linear) for m in layers) or not all(
+        isinstance(m, torch.nn.Tanh) for m in modules[1::2]
+    ):
+        raise ValueError("The native runtime implements tanh MLP actors only")
+    normalizer = actor.obs_normalizer
+    arrays = {"obs_mean": normalizer._mean[0], "obs_scale": normalizer._std[0] + normalizer.eps}
+    for i, layer in enumerate(layers):
+        arrays[f"w{i}"], arrays[f"b{i}"] = layer.weight, layer.bias
+
+    generator = torch.Generator().manual_seed(2026)
+
+    def uniform(*shape, scale=1.0):
+        return (2 * torch.rand(*shape, generator=generator) - 1) * scale
+
+    q = torch.tensor(HOME).repeat(cases, 1)
+    q[:, :3] += uniform(cases, 3, scale=0.3)
+    q[:, 3] = uniform(cases, scale=0.03)
+    v = uniform(cases, 4, scale=0.3)
+    requested = uniform(cases, 3) * torch.tensor([0.08, 0.08, 0.3])
+    lookahead = uniform(cases, steps, 3) * torch.tensor([0.02, 0.02, 0.1])
+    history = MeasuredHistory(cases, "cpu", velocity_samples, command_samples, u_stride)
+    history.q, history.v, history.u = q, uniform(*history.v.shape, scale=0.3), uniform(*history.u.shape)
+    tracking = policy.to_tracking_twist(kin, q, requested)
+    admitted, _ = policy.governor(kin)(q, v, tracking)
+    observation = history.observe(kin, admitted, point)
+    # History rollover: pushed one 100 Hz sample at a time, longer than the longest buffer.
+    rolled = MeasuredHistory(1, "cpu", velocity_samples, command_samples, u_stride)
+    seq_v, seq_u = uniform(sequence, 4, scale=0.3), uniform(sequence, 3)
+    for sample_v, sample_u in zip(seq_v, seq_u, strict=True):
+        rolled.push(q[:1], sample_v[None], sample_u[None])
+    arrays.update(
+        collision_grid=kin._grid,
+        ref_q=q, ref_v=v, ref_requested=requested, ref_lookahead=lookahead, ref_v_history=history.v,
+        ref_u_history=history.u, ref_tip_pose=kin.pose_jacobian(q)[0], ref_tracking=tracking,
+        ref_admitted=admitted, ref_action=policy(observation, lookahead if steps else None),
+        ref_observation=torch.cat((observation, lookahead.flatten(1)), 1),
+        ref_seq_v=seq_v, ref_seq_u=seq_u, ref_seq_observation=rolled.observe(kin, admitted[:1], point),
+    )  # fmt: skip
+    directory.mkdir(parents=True, exist_ok=False)
+    np.savez_compressed(
+        directory / NATIVE_ARRAYS,
+        **{k: a.numpy() if a.dtype == torch.bool else a.numpy().astype(np.float32) for k, a in arrays.items()},
+    )
+    contract = copy.deepcopy(policy.contract)
+    contract.pop("asset_path", None)
+    contract.pop("model_path", None)
+    contract.update(
+        bundle_version=3,
+        checkpoint_sha256=sha256(policy.checkpoint),
+        sensors=SENSOR_CONTRACT,
+        tracked_point=point,
+        velocity_samples=velocity_samples,
+        command_samples=command_samples,
+        u_stride=u_stride,
+        lookahead_steps=steps,
+        geometry={key: geometry[key] for key in ("frames", "limits_rad", "tip")},
+        arrays_sha256=sha256(directory / NATIVE_ARRAYS),
+    )
+    (directory / "contract.json").write_text(json.dumps(contract, indent=2) + "\n")
+    return directory

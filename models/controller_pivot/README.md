@@ -19,7 +19,6 @@ both `models/actuator_pivot` and the historical `models/actuator` as plants.
 The saved YAML records the complete recipe. Playback without future references
 supplies zero lookahead, meaning the current request is held.
 
-This package is for simulation playback and evaluation. It is not hardware
-validated. The legacy robot exporter rejects it: the native runtime still needs
-the pivot conversion, measured-history/governor adapter and sequence-parity
-checks. The historical tip-policy package remains in `models/controller`.
+This package is not hardware validated. `export_robot_bundle.py native` exports it for the
+robot's native stack (`ppo_live.py`); the legacy Python-stack exporter rejects it. The
+historical tip-policy package remains in `models/controller`.
