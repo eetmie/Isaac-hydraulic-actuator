@@ -1,0 +1,100 @@
+{
+  "version": 2,
+  "settings": {
+    "dt": 0.01,
+    "decimation": 5,
+    "speed_max": 0.12,
+    "pitch_rate_max": 0.3,
+    "joint_margin": 0.06,
+    "lookahead": 0.8,
+    "velocity_limit": 2.0
+  },
+  "policy_hz": 20.0,
+  "model_path": "models/actuator_pivot",
+  "model_files": {
+    "model_meta.json": "bddf3534cd3b2bff8555cd71f3946dc0f81dc9c736e448a7998963df62714141",
+    "mlp_state_dict.pt": "b848cb29a02c0911872d4b55653e655508f2553d7c903db191925975b1adf1f4",
+    "x_mean.npy": "df1a41e1769cc998733419eb2831d2e79335fcc28c168750b0b09abea0f2df64",
+    "x_std.npy": "4d95bf16f8ee48b1099e7d325b3666d78a0a85f29a0b6bc646b3a09a6b14eb0c",
+    "y_mean.npy": "ded21946e0084648263dff79d16a6f766d022d1879afce667a87231671ebafc6",
+    "y_std.npy": "c63c5d0ddda5e0769da06580f1573e236ba622f9a46d697ed404914d600d6981"
+  },
+  "extra_model_paths": [
+    "models/actuator"
+  ],
+  "asset_path": "assets/excavator_bucket_rocking.usd",
+  "asset_sha256": "8fd10b976aea8822f9c3e9bc4a15abb18c35db110818ba771597c2172b39472f",
+  "joint_names": [
+    "revolute_lift",
+    "revolute_tilt",
+    "revolute_tool",
+    "revolute_carriage_pitch"
+  ],
+  "tip_path": "/excavator/bucket/ee_tip",
+  "command_frame": "lower_carriage_XZ_pitch_about_positive_Y",
+  "tracked_twist": "arm_joints_only",
+  "action_transform": "tanh",
+  "observation_dim": 176,
+  "observation_fields": [
+    "q",
+    "current_and_past_v_every_20ms",
+    "past_commanded_u",
+    "pivot_xz",
+    "sin_pitch",
+    "cos_pitch",
+    "arm_pivot_twist",
+    "admitted_command",
+    "command_minus_arm_pivot_twist",
+    "lookahead"
+  ],
+  "tracked_point": "pivot",
+  "sensors": {
+    "version": 1,
+    "roles": [
+      "base",
+      "boom",
+      "arm",
+      "bucket"
+    ],
+    "velocity_source": "aligned_y_child_minus_parent",
+    "software_filter": "none",
+    "sampling": "latest_complete_packet_not_after_tick",
+    "bias": "firmware_startup_correction_only",
+    "carriage_pitch_zero_rad": -0.004821687005460262,
+    "mount_pitch_rad": [
+      0.0,
+      0.241728109123881,
+      0.017453221928437734,
+      0.0
+    ]
+  },
+  "sensor_randomization": {
+    "gyro_noise_std": 0.005,
+    "gyro_bias_max": 0.003,
+    "angle_noise_std": 0.003,
+    "delay_max_steps": 8
+  },
+  "motion_start": {
+    "prob": 0.3,
+    "seconds": 1.2
+  },
+  "joint_speed_limits_rad_s": [
+    [
+      0.18889744579792023,
+      0.3048270046710968
+    ],
+    [
+      0.40508896112442017,
+      0.3688373565673828
+    ],
+    [
+      0.7170059084892273,
+      0.6088266968727112
+    ]
+  ],
+  "governor_joint_speed_margin": 0.8,
+  "lookahead": {
+    "steps": 4,
+    "meaning": "requested twist at policy steps k+1..k+N minus at k [m/s, m/s, rad/s], step-major; zeros hold the current request"
+  }
+}

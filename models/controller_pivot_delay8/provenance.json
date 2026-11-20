@@ -1,0 +1,7 @@
+{
+  "source_run": "IsaacTraining/funky_20261119/runs/delay8_s43",
+  "checkpoint_sha256": "0c1d5b0d084fc61d4b099a7218269bf4966048aa662f4dbfdd97e79c0e9584f5",
+  "selection": "Best 20 mm/s surge under 30-100 ms benchmark sensor delay among the jitter-study runs; the matching seed 42 run was worse, so this is a selected seed.",
+  "tracked_point": "pivot",
+  "hardware_validated": false
+}
